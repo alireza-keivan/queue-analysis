@@ -1,0 +1,9 @@
+tracker_type: bytetrack
+source: 'tests/video1.mp4'
+vid_stride : 2
+classes : [0]
+conf: 0.35
+show: True
+save: True
+persist: True
+iou: 0.7
