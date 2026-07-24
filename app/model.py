@@ -5,7 +5,7 @@ def model_creation():
     model = YOLO('yolo12n.pt')
     #results = model.train(data="coco8.yaml", epochs=100, imgsz=640)
     results = model.track(source= 'tests/video1.mp4', vid_stride = 2, classes = [0], 
-                          conf=0.35, show=True, save=True, persist=True, iou=0.7, tracker = "app/custom_tracker.yaml") 
+                          conf=0.35, show=True, save=True, persist=True, iou=0.7, tracker = "app/trackers/botsort.yaml") 
                           # stream=True , visualize = True
     
     for result in results:  
@@ -16,5 +16,5 @@ def model_creation():
         names = [result.names[cls.item()] for cls in result.boxes.cls.int()]  # class name of each box
         confs = result.boxes.conf  # confidence score of each box
         print(names, confs)
-        
+
 model_creation()
