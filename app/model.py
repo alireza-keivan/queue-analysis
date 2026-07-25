@@ -12,10 +12,19 @@ def model_creation(y,x,w,h):
         if not ret:
             print("no video")
             break
-        frame = frame[y:y+h, x:x+w]
-        #results = model.track(source= frame, vid_stride = 2, classes = [0], conf=0.35, show=True, save=True, persist=True, iou=0.7, tracker = "app/trackers/botsort.yaml")
+        zone_points = [
+            (700, 200),
+            (1720, 200),
+            (1720, 700),
+            (700, 700),
+        ]
+        #cv2.rectangle(frame, (700,200),(1720, 700), (0,255,0), 2)
+        #results = model.track(source= frame, vid_stride = 2, classes = [0],
+        #  conf=0.35, show=True, save=True, persist=True, iou=0.7,
+        #  tracker = "app/trackers/botsort.yaml")
                                             # stream=True , visualize = True
         cv2.imshow('Video Playback', frame)
+        
         if cv2.waitKey(25) & 0xFF == ord('q'):
             break
     cap.release()
