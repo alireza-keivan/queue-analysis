@@ -24,6 +24,8 @@ class RTSPCameraStream:
             if self.frame is not None:
                 return self.frame
             return False, None
+
+
         
     def main():
         user = os.getenv("USER")
