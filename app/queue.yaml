@@ -1,4 +1,5 @@
 QUEUE_REGION : [[700, 200], [1720, 200], [1720, 700], [700, 700]]
+MODEL : 'yolo26m.pt'
 VIDEO_WRITER: 'tests/queue_management.avi'
 TRACKER : 'app/trackers/botsort.yaml'
 CAP : "tests/video2.mp4" 

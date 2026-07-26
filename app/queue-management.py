@@ -2,23 +2,50 @@ import cv2
 from ultralytics import solutions
 import yaml
 
-def queue_management():
+def load_config(file_path="app/queue.yaml"):
     # Read video file
-    with open("app/queue.yaml", "r") as file:
-        config = yaml.safe_load(file)
-    
-    cap = cv2.VideoCapture(config["CAP"])
-    assert cap.isOpened(), "Error reading video file"
+    with open(file_path, "r") as file:
+        try: 
+            config = yaml.safe_load(file)
+        except yaml.YAMLError as e:
+            print(f"Error reading YAML file: {e}")
+            return None
+    return config
 
-    # Video writer
-    w, h, fps = (int(cap.get(x)) 
-                for x in (
-                cv2.CAP_PROP_FRAME_WIDTH,
-                cv2.CAP_PROP_FRAME_HEIGHT,
-                cv2.CAP_PROP_FPS))
-    
-    video_writer = cv2.VideoWriter(config["VIDEO_WRITER"], cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+def cap_check(path):
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        print("Error: Could not open webcam.")
+        return None
+    return cap
 
+def release_cap(check):
+    if check:
+        check.release()
+        cv2.destroyAllWindows()
+        return "cap released"
+    else:
+        print("CAP IS NOT OPENED")
+        return None
+
+def video_writer(capture, path):
+    # Create a VideoWriter object
+    w, h, fps = (int(capture.get(x)) 
+                    for x in (
+                    cv2.CAP_PROP_FRAME_WIDTH,
+                    cv2.CAP_PROP_FRAME_HEIGHT,
+                    cv2.CAP_PROP_FPS))
+    
+    writer = cv2.VideoWriter(path,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                fps, (w, h))
+    return writer    
+    
+def queue_management():
+    config = load_config()
+    cap = cap_check(config["CAP"])
+    writer = video_writer(cap, config["VIDEO_WRITER"])
+    
     # Initialize queue manager object
     queuemanager = solutions.QueueManager(
         show=True,  # display the output
@@ -30,7 +57,6 @@ def queue_management():
         classes=[0],
         device=0,
     )
-
     # Process video
     while cap.isOpened():
         success, im0 = cap.read()
@@ -41,11 +67,10 @@ def queue_management():
 
         print(results)  # access the output
     
-        video_writer.write(results.plot_im)  # write the processed frame.
+        writer.write(results.plot_im)  # write the processed frame.
 
-    cap.release()
-    video_writer.release()
-    cv2.destroyAllWindows()  # destroy all opened windows
+    release_cap(cap)
+    writer.release()
 
-if __name__ == "__main__":
-    queue_management()
+#if __name__ == "__main__":
+#    queue_management()
