@@ -1,0 +1,6 @@
+QUEUE_REGION : [[700, 200], [1720, 200], [1720, 700], [700, 700]]
+VIDEO_WRITER: 'tests/queue_management.avi'
+TRACKER : 'app/trackers/botsort.yaml'
+CAP : "tests/video2.mp4" 
+CONF: 0.35
+IOU: 0.7
