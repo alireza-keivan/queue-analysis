@@ -40,12 +40,8 @@ def video_writer(capture, path):
                 cv2.VideoWriter_fourcc(*"mp4v"),
                 fps, (w, h))
     return writer    
-    
-def queue_management():
-    config = load_config()
-    cap = cap_check(config["CAP"])
-    writer = video_writer(cap, config["VIDEO_WRITER"])
-    
+
+def model_creator(config):
     # Initialize queue manager object
     queuemanager = solutions.QueueManager(
         show=True,  # display the output
@@ -57,20 +53,29 @@ def queue_management():
         classes=[0],
         device=0,
     )
+    return queuemanager
+
+def video_processor(cap, queue_manager, writer):
     # Process video
     while cap.isOpened():
         success, im0 = cap.read()
         if not success:
             print("Video frame is empty or processing is complete.")
             break
-        results = queuemanager(im0)
-
-        print(results)  # access the output
-    
+        results = queue_manager(im0)
+        print(results)
         writer.write(results.plot_im)  # write the processed frame.
+    return results
 
+def queue_management():
+    config = load_config()
+    cap = cap_check(config["CAP"])
+    writer = video_writer(cap, config["VIDEO_WRITER"])
+    queue_manager = model_creator(config)
+    result_processor = video_processor(cap, queue_manager, writer)
     release_cap(cap)
     writer.release()
+    return result_processor
 
-#if __name__ == "__main__":
-#    queue_management()
+if __name__ == "__main__":
+    queue_management()
