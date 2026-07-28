@@ -4,4 +4,4 @@ VIDEO_WRITER: 'tests/queue_management.avi'
 TRACKER : 'app/trackers/botsort.yaml'
 CAP : "tests/video2.mp4" 
 CONF: 0.35
-IOU: 0.7
+IOU: 0.70
