@@ -4,7 +4,9 @@ WORKDIR /app
 
 COPY requirements.txt app/requirements.txt
 
-RUN pip install -r app/requirements.txt --break-system-packages
+RUN pip install -r app/requirements.txt --break-system-packages && \
+    pip uninstall -y --break-system-packages opencv-python opencv-python-headless && \
+    pip install --break-system-packages opencv-python-headless==5.0.0.93
 
 COPY . .
 
