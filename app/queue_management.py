@@ -22,7 +22,7 @@ def cap_check(path):
 def release_cap(check):
     if check:
         check.release()
-        cv2.destroyAllWindows()
+        #cv2.destroyAllWindows()
         return "cap released"
     else:
         print("CAP IS NOT OPENED")
@@ -44,7 +44,7 @@ def video_writer(capture, path):
 def model_creator(config):
     # Initialize queue manager object
     queuemanager = solutions.QueueManager(
-        show=True,  # display the output
+        show=False,  # display the output
         model=config["MODEL"],  # path to the YOLO26 model file
         region=config["QUEUE_REGION"],
         tracker=config["TRACKER"],
