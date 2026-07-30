@@ -4,6 +4,7 @@ import tempfile
 
 import requests
 import runpod
+from runpod.serverless.utils.rp_upload import upload_file_to_bucket
 
 from app.queue_management import (
     load_config,
@@ -13,6 +14,8 @@ from app.queue_management import (
     model_creator,
     video_processor,
 )
+
+BUCKET_NAME = "Alireza-keivan"
 
 # Loaded once at cold start, reused across every request on this worker.
 config = load_config()
@@ -43,9 +46,24 @@ def handler(event):
         writer = video_writer(cap, output_tmp.name)
         results = video_processor(cap, queue_manager, writer)
 
+        # Release before upload: VideoWriter buffers frames until closed,
+        # so the file on disk isn't complete until this happens.
+        release_cap(cap)
+        cap = None
+        writer.release()
+        writer = None
+
+        annotated_video_url = upload_file_to_bucket(
+            file_name="annotated.avi",
+            file_location=output_tmp.name,
+            bucket_name=BUCKET_NAME,
+            prefix="queue-analysis-outputs",
+        )
+
         return {
             "queue_count": results.queue_count,
             "total_tracks": results.total_tracks,
+            "annotated_video_url": annotated_video_url,
         }
     finally:
         if cap is not None:
