@@ -50,8 +50,7 @@ def model_creator(config):
         tracker=config["TRACKER"],
         conf=config["CONF"],
         iou=config["IOU"],
-        classes=[0],
-        device=0,
+        classes=[0]
     )
     return queuemanager
 
