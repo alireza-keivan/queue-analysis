@@ -10,4 +10,4 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["python", "app/queue-management.py"]
+CMD ["python", "handler.py"]
