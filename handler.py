@@ -2,9 +2,10 @@
 import os
 import tempfile
 
+import boto3
+from botocore.config import Config as BotoConfig
 import requests
 import runpod
-from runpod.serverless.utils.rp_upload import upload_file_to_bucket
 
 from app.queue_management import (
     load_config,
@@ -16,10 +17,33 @@ from app.queue_management import (
 )
 
 BUCKET_NAME = "Alireza-keivan"
+BUCKET_REGION = "us-east-005"
 
 # Loaded once at cold start, reused across every request on this worker.
 config = load_config()
 queue_manager = model_creator(config)
+
+
+def upload_annotated_video(file_path):
+    # rp_upload's own upload helper can't determine Backblaze's region from
+    # this endpoint format and silently signs requests with the wrong region,
+    # causing SignatureDoesNotMatch. Building the client directly with the
+    # correct region avoids that.
+    client = boto3.client(
+        "s3",
+        endpoint_url=os.environ["BUCKET_ENDPOINT_URL"],
+        aws_access_key_id=os.environ["BUCKET_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["BUCKET_SECRET_ACCESS_KEY"],
+        region_name=BUCKET_REGION,
+        config=BotoConfig(signature_version="s3v4"),
+    )
+    key = "queue-analysis-outputs/annotated.avi"
+    client.upload_file(file_path, BUCKET_NAME, key)
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": BUCKET_NAME, "Key": key},
+        ExpiresIn=7 * 24 * 3600,
+    )
 
 
 def handler(event):
@@ -53,12 +77,7 @@ def handler(event):
         writer.release()
         writer = None
 
-        annotated_video_url = upload_file_to_bucket(
-            file_name="annotated.avi",
-            file_location=output_tmp.name,
-            bucket_name=BUCKET_NAME,
-            prefix="queue-analysis-outputs",
-        )
+        annotated_video_url = upload_annotated_video(output_tmp.name)
 
         return {
             "queue_count": results.queue_count,
