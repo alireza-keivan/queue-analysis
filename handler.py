@@ -28,14 +28,20 @@ def upload_annotated_video(file_path):
     # rp_upload's own upload helper can't determine Backblaze's region from
     # this endpoint format and silently signs requests with the wrong region,
     # causing SignatureDoesNotMatch. Building the client directly with the
-    # correct region avoids that.
+    # correct region avoids that. request/response checksum calculation is
+    # also restricted to "when_required" since Backblaze's signature
+    # verification doesn't handle botocore's newer default checksum headers.
     client = boto3.client(
         "s3",
         endpoint_url=os.environ["BUCKET_ENDPOINT_URL"],
         aws_access_key_id=os.environ["BUCKET_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["BUCKET_SECRET_ACCESS_KEY"],
         region_name=BUCKET_REGION,
-        config=BotoConfig(signature_version="s3v4"),
+        config=BotoConfig(
+            signature_version="s3v4",
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
     )
     key = "queue-analysis-outputs/annotated.avi"
     client.upload_file(file_path, BUCKET_NAME, key)
