@@ -25,7 +25,7 @@ actually triggered, not 24/7.
 - `Dockerfile` using a CUDA/PyTorch-ready base image (`pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime`) with `.dockerignore` excluding `venv/`, `.git/`, `.env`, `runs/`, `docs/`, `tests/`.
 - `docker-compose.yml` in progress — GPU device reservation + volume mounts for input video, output, and config.
 
-**Next up:** persist per-frame `queue_count` / `total_tracks` metrics to SQLite; finish the record-then-batch pipeline (`app/RTSP.py` as the recording side).
+**Next up:** ROI-filtered per-frame logging in `video_processor` (ties each `track_id` to whether it's inside the queue region) to observe real entry/exit/occlusion behavior before finalizing storage granularity; then a two-service persistence layer — see Roadmap.
 
 ## Setup
 
@@ -41,7 +41,14 @@ actually triggered, not 24/7.
 
 ## Roadmap
 
-<!-- RTSP recorder, batch trigger/API, SQLite persistence, multi-camera support. -->
+- Decide storage granularity (interval-sampled snapshots vs on-change vs per-track dwell time) from observed ROI entry/exit logs.
+- **Two-service persistence layer** (separate from the RunPod deployment):
+  - `processor` service — runs the queue-analysis pipeline (or consumes RunPod job results) and POSTs results over HTTP; never touches SQLite directly.
+  - `storage-api` service — small Flask/FastAPI app that exclusively owns the SQLite file, exposing routes to insert and query records. Sole owner avoids SQLite's multi-writer/locking issues across processes.
+  - Wired together in `docker-compose.yml`: shared internal network for service-to-service calls, named volume so the SQLite file persists across restarts.
+- RTSP/continuous recorder as the "record" half of the record-then-batch architecture.
+- Batch trigger/API to kick off processing on demand (RunPod Serverless — done for the GPU/tracking side; still need the local trigger + result-persistence loop).
+- Multi-camera support.
 
 ## License
 

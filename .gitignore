@@ -2,3 +2,6 @@ venv/
 .env
 runs/
 PREREQUISITE.md
+temp.txt
+API_test.sh
+snippet_test.sh
