@@ -50,7 +50,6 @@ def upload_annotated_video(file_path):
         ExpiresIn=7 * 24 * 3600,
     )
 
-
 def handler(event):
     job_input = event["input"]
     video_url = job_input.get("video_url")
