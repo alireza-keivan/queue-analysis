@@ -19,9 +19,8 @@ from app.queue_management import (
 BUCKET_NAME = "Alireza-keivan"
 BUCKET_REGION = "us-east-005"
 
-# Loaded once at cold start, reused across every request on this worker.
+# Config is static, safe to load once at cold start.
 config = load_config()
-queue_manager = model_creator(config)
 
 
 def upload_annotated_video(file_path):
@@ -72,6 +71,11 @@ def handler(event):
         cap = cap_check(input_tmp.name)
         if cap is None:
             return {"error": "Could not open downloaded video."}
+
+        # Fresh QueueManager per job: reused tracker state (track_history,
+        # ID counter, persist=True tracking) leaked across unrelated videos
+        # when this was created once at cold start.
+        queue_manager = model_creator(config)
 
         writer = video_writer(cap, output_tmp.name)
         results = video_processor(cap, queue_manager, writer)
