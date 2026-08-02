@@ -3,6 +3,7 @@ from ultralytics import solutions
 import yaml
 import logging
 import numpy as np
+import uuid
 
 def load_config(file_path="app/queue.yaml"):
     # Read video file
@@ -56,16 +57,24 @@ def model_creator(config):
     )
     return queuemanager
 
-def video_processor(cap, queue_manager, writer):
+def video_processor(cap, queue_manager, writer, job_id):
     # Process video
     region = np.array(queue_manager.region, dtype=np.int32)  # built once, reused every frame
+    fps = cap.get(cv2.CAP_PROP_FPS)
     frame_idx = 0
+
+    open_tracks = {}       # track_id -> entry_time (video-relative seconds)
+    completed_tracks = []  # [{job_id, track_id, dwell_seconds}, ...]
+    snapshots = []         # [{job_id, timestamp, queue_count}, ...]
+    last_snapshot_second = None
+
     while cap.isOpened():
         success, im0 = cap.read()
         if not success:
             logging.info("Video frame is empty or processing is complete.")
             break
         results = queue_manager(im0)
+        current_time = frame_idx / fps
 
         inside_ids = []
         for track_id, box in zip(queue_manager.track_ids, queue_manager.boxes):
@@ -73,23 +82,61 @@ def video_processor(cap, queue_manager, writer):
             if cv2.pointPolygonTest(region, point, False) >= 0:
                 inside_ids.append(track_id)
 
+        # Entries: newly inside the ROI, not already being tracked as "in".
+        for track_id in inside_ids:
+            if track_id not in open_tracks:
+                open_tracks[track_id] = current_time
+
+        # Exits: was inside, no longer is.
+        for track_id in list(open_tracks.keys()):
+            if track_id not in inside_ids:
+                entry_time = open_tracks.pop(track_id)
+                completed_tracks.append({
+                    "job_id": job_id,
+                    "track_id": track_id,
+                    "dwell_seconds": current_time - entry_time,
+                })
+
+        # Snapshot once per whole second of video, not every frame.
+        current_second = int(current_time)
+        if current_second != last_snapshot_second:
+            snapshots.append({
+                "job_id": job_id,
+                "timestamp": current_time,
+                "queue_count": len(inside_ids),
+            })
+            last_snapshot_second = current_second
+
         logging.info(f"Frame {frame_idx}: inside ROI = {inside_ids}")
 
         writer.write(results.plot_im)  # write the processed frame.
         frame_idx += 1
-    return results
+
+    # Video ended while these were still inside the ROI - close them out
+    # using the last processed frame as their exit, so they aren't silently
+    # dropped from the data.
+    final_time = frame_idx / fps
+    for track_id, entry_time in open_tracks.items():
+        completed_tracks.append({
+            "job_id": job_id,
+            "track_id": track_id,
+            "dwell_seconds": final_time - entry_time,
+        })
+
+    return snapshots, completed_tracks
 
 def queue_management():
     config = load_config()
     cap = cap_check(config["CAP"])
     writer = video_writer(cap, config["VIDEO_WRITER"])
     queue_manager = model_creator(config)
-    result_processor = video_processor(cap, queue_manager, writer)
+    job_id = str(uuid.uuid4())
+    snapshots, completed_tracks = video_processor(cap, queue_manager, writer, job_id)
     logging.info("Queue management processing complete.")
 
     release_cap(cap)
     writer.release()
-    return result_processor
+    return snapshots, completed_tracks
 
 if __name__ == "__main__":
     queue_management()

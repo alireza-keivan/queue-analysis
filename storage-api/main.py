@@ -27,7 +27,7 @@ def get_db(request: Request):
 async def create_snapshot(snapshot: SnapshotIn, db=Depends(get_db)):
     cursor = await db.execute(
         "INSERT INTO snapshots (job_id, timestamp, queue_count) VALUES (?, ?, ?)",
-        (snapshot.job_id, snapshot.timestamp.isoformat(), snapshot.queue_count),
+        (snapshot.job_id, snapshot.timestamp, snapshot.queue_count),
     )
     await db.commit()
     return SnapshotOut(id=cursor.lastrowid, **snapshot.model_dump())
@@ -49,8 +49,8 @@ async def list_snapshots(job_id: str | None = Query(default=None), db=Depends(ge
 @app.post("/tracks", response_model=TrackOut)
 async def create_track(track: TrackIn, db=Depends(get_db)):
     cursor = await db.execute(
-        "INSERT INTO tracks (job_id, track_id, entry_time, exit_time) VALUES (?, ?, ?, ?)",
-        (track.job_id, track.track_id, track.entry_time.isoformat(), track.exit_time.isoformat()),
+        "INSERT INTO tracks (job_id, track_id, dwell_seconds) VALUES (?, ?, ?)",
+        (track.job_id, track.track_id, track.dwell_seconds),
     )
     await db.commit()
     return TrackOut(id=cursor.lastrowid, **track.model_dump())
@@ -60,13 +60,13 @@ async def create_track(track: TrackIn, db=Depends(get_db)):
 async def list_tracks(job_id: str | None = Query(default=None), db=Depends(get_db)):
     if job_id is not None:
         cursor = await db.execute(
-            "SELECT id, job_id, track_id, entry_time, exit_time FROM tracks WHERE job_id = ?",
+            "SELECT id, job_id, track_id, dwell_seconds FROM tracks WHERE job_id = ?",
             (job_id,),
         )
     else:
-        cursor = await db.execute("SELECT id, job_id, track_id, entry_time, exit_time FROM tracks")
+        cursor = await db.execute("SELECT id, job_id, track_id, dwell_seconds FROM tracks")
     rows = await cursor.fetchall()
     return [
-        TrackOut(id=r[0], job_id=r[1], track_id=r[2], entry_time=r[3], exit_time=r[4])
+        TrackOut(id=r[0], job_id=r[1], track_id=r[2], dwell_seconds=r[3])
         for r in rows
     ]
