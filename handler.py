@@ -50,6 +50,7 @@ def upload_annotated_video(file_path):
     )
 
 def handler(event):
+    job_id = event["id"]
     job_input = event["input"]
     video_url = job_input.get("video_url")
     if not video_url:
@@ -76,7 +77,7 @@ def handler(event):
         queue_manager = model_creator(config)
 
         writer = video_writer(cap, output_tmp.name)
-        results = video_processor(cap, queue_manager, writer)
+        snapshots, tracks = video_processor(cap, queue_manager, writer, job_id)
 
         # Release before upload: VideoWriter buffers frames until closed,
         # so the file on disk isn't complete until this happens.
@@ -88,8 +89,9 @@ def handler(event):
         annotated_video_url = upload_annotated_video(output_tmp.name)
 
         return {
-            "queue_count": results.queue_count,
-            "total_tracks": results.total_tracks,
+            "job_id": job_id,
+            "snapshots": snapshots,
+            "tracks": tracks,
             "annotated_video_url": annotated_video_url,
         }
     finally:
