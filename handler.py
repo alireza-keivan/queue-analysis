@@ -1,4 +1,3 @@
-# handler.py
 import os
 import tempfile
 
