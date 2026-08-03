@@ -2,6 +2,9 @@ QUEUE_REGION : [[700, 200], [1720, 200], [1720, 700], [700, 700]]
 MODEL : 'yolo26m.pt'
 VIDEO_WRITER: 'tests/queue_management.avi'
 TRACKER : 'app/trackers/botsort.yaml'
-CAP : "tests/video2.mp4" 
+CAP : "tests/video2.mp4"
 CONF: 0.35
 IOU: 0.70
+# Frames per second actually fed to the model. Source video is ~60fps, which is
+# ~6x more than queue analysis needs; every skipped frame is GPU time not paid for.
+TARGET_FPS: 10

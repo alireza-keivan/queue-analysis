@@ -58,6 +58,11 @@ def handler(event):
     if not video_url:
         return {"error": "No 'video_url' provided."}
 
+    # Per-request overrides; fall back to queue.yaml. Turning annotate off
+    # skips rendering, encoding and uploading the output video entirely.
+    target_fps = job_input.get("target_fps", config.get("TARGET_FPS", 10))
+    annotate = job_input.get("annotate", True)
+
     input_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     output_tmp = tempfile.NamedTemporaryFile(suffix=".avi", delete=False)
     cap = None
@@ -84,9 +89,12 @@ def handler(event):
         queue_manager = model_creator(config)
         t_model_load = time.perf_counter() - a
 
-        writer = video_writer(cap, output_tmp.name)
+        writer = video_writer(cap, output_tmp.name, target_fps)
         a = time.perf_counter()
-        snapshots, tracks = video_processor(cap, queue_manager, writer, job_id)
+        snapshots, tracks = video_processor(
+            cap, queue_manager, writer, job_id,
+            target_fps=target_fps, annotate=annotate,
+        )
         t_process = time.perf_counter() - a
 
         # Release before upload: VideoWriter buffers frames until closed,
@@ -98,7 +106,7 @@ def handler(event):
         output_mb = os.path.getsize(output_tmp.name) / 1e6
 
         a = time.perf_counter()
-        annotated_video_url = upload_annotated_video(output_tmp.name)
+        annotated_video_url = upload_annotated_video(output_tmp.name) if annotate else None
         t_upload = time.perf_counter() - a
 
         t_total = time.perf_counter() - t_job_start

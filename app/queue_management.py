@@ -33,18 +33,30 @@ def release_cap(check):
         logging.error("CAP IS NOT OPENED")
         return None
 
-def video_writer(capture, path):
+def frame_stride(capture, target_fps):
+    """How many source frames to advance per processed frame.
+
+    Returns (stride, effective_fps). Single source of truth so the writer's
+    playback rate always matches the rate frames are actually processed at.
+    """
+    src_fps = capture.get(cv2.CAP_PROP_FPS) or float(target_fps)
+    stride = max(1, round(src_fps / target_fps))
+    return stride, src_fps / stride
+
+def video_writer(capture, path, target_fps):
     # Create a VideoWriter object
-    w, h, fps = (int(capture.get(x)) 
+    w, h = (int(capture.get(x))
                     for x in (
                     cv2.CAP_PROP_FRAME_WIDTH,
-                    cv2.CAP_PROP_FRAME_HEIGHT,
-                    cv2.CAP_PROP_FPS))
-    
+                    cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Must be the processed rate, not the source rate, or playback runs fast.
+    _, effective_fps = frame_stride(capture, target_fps)
+
     writer = cv2.VideoWriter(path,
                 cv2.VideoWriter_fourcc(*"mp4v"),
-                fps, (w, h))
-    return writer    
+                effective_fps, (w, h))
+    return writer
 
 def model_creator(config):
     # Initialize queue manager object
@@ -59,11 +71,18 @@ def model_creator(config):
     )
     return queuemanager
 
-def video_processor(cap, queue_manager, writer, job_id):
+def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=True):
     # Process video
     region = np.array(queue_manager.region, dtype=np.int32)  # built once, reused every frame
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_idx = 0
+    src_fps = cap.get(cv2.CAP_PROP_FPS) or float(target_fps)
+    stride, effective_fps = frame_stride(cap, target_fps)
+    logging.info(
+        f"Source {src_fps:.2f}fps -> processing every {stride} frame(s) "
+        f"= {effective_fps:.2f}fps"
+    )
+
+    src_idx = 0     # position in the source video (drives real video time)
+    frame_idx = 0   # frames actually run through the model
 
     open_tracks = {}       # track_id -> entry_time (video-relative seconds)
     completed_tracks = []  # [{job_id, track_id, dwell_seconds}, ...]
@@ -77,9 +96,22 @@ def video_processor(cap, queue_manager, writer, job_id):
     peak_concurrent = 0
     t_loop_start = time.perf_counter()
 
-    while cap.isOpened():
+    while True:
+        # grab() advances the decoder without converting the frame to BGR;
+        # retrieve() does that conversion. Skipped frames never pay for it.
         a = time.perf_counter()
-        success, im0 = cap.read()
+        if not cap.grab():
+            t_decode += time.perf_counter() - a
+            logging.info("Video frame is empty or processing is complete.")
+            break
+
+        frame_pos = src_idx
+        src_idx += 1
+        if frame_pos % stride != 0:
+            t_decode += time.perf_counter() - a
+            continue
+
+        success, im0 = cap.retrieve()
         t_decode += time.perf_counter() - a
         if not success:
             logging.info("Video frame is empty or processing is complete.")
@@ -95,7 +127,8 @@ def video_processor(cap, queue_manager, writer, job_id):
             ms_inf += speed.get("inference", 0.0)
             ms_post += speed.get("postprocess", 0.0)
 
-        current_time = frame_idx / fps
+        # Real position in the video, so timings stay correct despite skipping.
+        current_time = frame_pos / src_fps
 
         a = time.perf_counter()
         inside_ids = []
@@ -140,7 +173,8 @@ def video_processor(cap, queue_manager, writer, job_id):
         t_log += time.perf_counter() - a
 
         a = time.perf_counter()
-        writer.write(results.plot_im)  # write the processed frame.
+        if annotate:
+            writer.write(results.plot_im)  # write the processed frame.
         t_write += time.perf_counter() - a
         frame_idx += 1
 
@@ -149,7 +183,7 @@ def video_processor(cap, queue_manager, writer, job_id):
     # Video ended while these were still inside the ROI - close them out
     # using the last processed frame as their exit, so they aren't silently
     # dropped from the data.
-    final_time = frame_idx / fps
+    final_time = src_idx / src_fps
     for track_id, entry_time in open_tracks.items():
         completed_tracks.append({
             "job_id": job_id,
@@ -157,15 +191,17 @@ def video_processor(cap, queue_manager, writer, job_id):
             "dwell_seconds": final_time - entry_time,
         })
 
-    _log_profile(job_id, frame_idx, fps, t_loop, t_decode, t_track, t_roi,
-                 t_write, t_log, ms_pre, ms_inf, ms_post,
+    _log_profile(job_id, frame_idx, src_idx, src_fps, effective_fps, t_loop,
+                 t_decode, t_track, t_roi, t_write, t_log,
+                 ms_pre, ms_inf, ms_post,
                  unique_ids, peak_concurrent, completed_tracks)
 
     return snapshots, completed_tracks
 
 
-def _log_profile(job_id, frames, fps, t_loop, t_decode, t_track, t_roi, t_write,
-                 t_log, ms_pre, ms_inf, ms_post, unique_ids, peak_concurrent,
+def _log_profile(job_id, frames, src_frames, src_fps, effective_fps, t_loop,
+                 t_decode, t_track, t_roi, t_write, t_log,
+                 ms_pre, ms_inf, ms_post, unique_ids, peak_concurrent,
                  completed_tracks):
     """One screenshot-friendly block of cost + tracking-quality numbers."""
     if frames == 0:
@@ -175,7 +211,7 @@ def _log_profile(job_id, frames, fps, t_loop, t_decode, t_track, t_roi, t_write,
     def per_frame(total_seconds):
         return total_seconds / frames * 1000.0
 
-    video_seconds = frames / fps if fps else 0.0
+    video_seconds = src_frames / src_fps if src_fps else 0.0
     dwells = [t["dwell_seconds"] for t in completed_tracks]
     short = [d for d in dwells if d < 1.0]
 
@@ -183,9 +219,11 @@ def _log_profile(job_id, frames, fps, t_loop, t_decode, t_track, t_roi, t_write,
         "",
         "=" * 62,
         f"PROFILE  job={job_id}",
-        f"  frames={frames}  video={video_seconds:.1f}s @ {fps:.2f}fps",
+        f"  video={video_seconds:.1f}s  src_frames={src_frames} @ {src_fps:.2f}fps",
+        f"  processed={frames} frames @ {effective_fps:.2f}fps  "
+        f"(skipped {src_frames - frames} = {(1 - frames / src_frames) * 100 if src_frames else 0:.0f}%)",
         f"  loop wall={t_loop:.1f}s   speed={video_seconds / t_loop if t_loop else 0:.2f}x realtime"
-        f"   ({per_frame(t_loop):.1f} ms/frame)",
+        f"   ({per_frame(t_loop):.1f} ms/processed frame)",
         "-" * 62,
         "  STAGE                ms/frame     % of loop",
         f"    decode          {per_frame(t_decode):9.2f}   {t_decode / t_loop * 100:7.1f}%",
@@ -215,11 +253,14 @@ def _log_profile(job_id, frames, fps, t_loop, t_decode, t_track, t_roi, t_write,
 
 def queue_management():
     config = load_config()
+    target_fps = config.get("TARGET_FPS", 10)
     cap = cap_check(config["CAP"])
-    writer = video_writer(cap, config["VIDEO_WRITER"])
+    writer = video_writer(cap, config["VIDEO_WRITER"], target_fps)
     queue_manager = model_creator(config)
     job_id = str(uuid.uuid4())
-    snapshots, completed_tracks = video_processor(cap, queue_manager, writer, job_id)
+    snapshots, completed_tracks = video_processor(
+        cap, queue_manager, writer, job_id, target_fps=target_fps
+    )
     logging.info("Queue management processing complete.")
 
     release_cap(cap)
