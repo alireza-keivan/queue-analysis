@@ -4,6 +4,8 @@ import yaml
 import logging
 import numpy as np
 import uuid
+import time
+import statistics
 
 def load_config(file_path="app/queue.yaml"):
     # Read video file
@@ -68,14 +70,34 @@ def video_processor(cap, queue_manager, writer, job_id):
     snapshots = []         # [{job_id, timestamp, queue_count}, ...]
     last_snapshot_second = None
 
+    # --- profiling accumulators (cheap; one summary logged at the end) ---
+    t_decode = t_track = t_roi = t_write = t_log = 0.0
+    ms_pre = ms_inf = ms_post = 0.0
+    unique_ids = set()
+    peak_concurrent = 0
+    t_loop_start = time.perf_counter()
+
     while cap.isOpened():
+        a = time.perf_counter()
         success, im0 = cap.read()
+        t_decode += time.perf_counter() - a
         if not success:
             logging.info("Video frame is empty or processing is complete.")
             break
+
+        a = time.perf_counter()
         results = queue_manager(im0)
+        t_track += time.perf_counter() - a
+        # Ultralytics' own per-stage numbers for the frame it just ran.
+        speed = getattr(queue_manager.tracks, "speed", None)
+        if speed:
+            ms_pre += speed.get("preprocess", 0.0)
+            ms_inf += speed.get("inference", 0.0)
+            ms_post += speed.get("postprocess", 0.0)
+
         current_time = frame_idx / fps
 
+        a = time.perf_counter()
         inside_ids = []
         for track_id, box in zip(queue_manager.track_ids, queue_manager.boxes):
             point = (float((box[0] + box[2]) / 2), float(box[3]))  # bottom-center of box
@@ -106,11 +128,23 @@ def video_processor(cap, queue_manager, writer, job_id):
                 "queue_count": len(inside_ids),
             })
             last_snapshot_second = current_second
+        t_roi += time.perf_counter() - a
 
-        logging.info(f"Frame {frame_idx}: inside ROI = {inside_ids}")
+        unique_ids.update(inside_ids)
+        peak_concurrent = max(peak_concurrent, len(inside_ids))
 
+        # Per-frame logging is itself a measurable cost at 60fps, so sample it.
+        a = time.perf_counter()
+        if frame_idx % 100 == 0:
+            logging.info(f"Frame {frame_idx}: inside ROI = {inside_ids}")
+        t_log += time.perf_counter() - a
+
+        a = time.perf_counter()
         writer.write(results.plot_im)  # write the processed frame.
+        t_write += time.perf_counter() - a
         frame_idx += 1
+
+    t_loop = time.perf_counter() - t_loop_start
 
     # Video ended while these were still inside the ROI - close them out
     # using the last processed frame as their exit, so they aren't silently
@@ -123,7 +157,61 @@ def video_processor(cap, queue_manager, writer, job_id):
             "dwell_seconds": final_time - entry_time,
         })
 
+    _log_profile(job_id, frame_idx, fps, t_loop, t_decode, t_track, t_roi,
+                 t_write, t_log, ms_pre, ms_inf, ms_post,
+                 unique_ids, peak_concurrent, completed_tracks)
+
     return snapshots, completed_tracks
+
+
+def _log_profile(job_id, frames, fps, t_loop, t_decode, t_track, t_roi, t_write,
+                 t_log, ms_pre, ms_inf, ms_post, unique_ids, peak_concurrent,
+                 completed_tracks):
+    """One screenshot-friendly block of cost + tracking-quality numbers."""
+    if frames == 0:
+        logging.info("PROFILE: no frames processed")
+        return
+
+    def per_frame(total_seconds):
+        return total_seconds / frames * 1000.0
+
+    video_seconds = frames / fps if fps else 0.0
+    dwells = [t["dwell_seconds"] for t in completed_tracks]
+    short = [d for d in dwells if d < 1.0]
+
+    lines = [
+        "",
+        "=" * 62,
+        f"PROFILE  job={job_id}",
+        f"  frames={frames}  video={video_seconds:.1f}s @ {fps:.2f}fps",
+        f"  loop wall={t_loop:.1f}s   speed={video_seconds / t_loop if t_loop else 0:.2f}x realtime"
+        f"   ({per_frame(t_loop):.1f} ms/frame)",
+        "-" * 62,
+        "  STAGE                ms/frame     % of loop",
+        f"    decode          {per_frame(t_decode):9.2f}   {t_decode / t_loop * 100:7.1f}%",
+        f"    track+solution  {per_frame(t_track):9.2f}   {t_track / t_loop * 100:7.1f}%",
+        f"        preprocess  {ms_pre / frames:9.2f}",
+        f"        inference   {ms_inf / frames:9.2f}",
+        f"        postprocess {ms_post / frames:9.2f}",
+        f"        tracker/etc {per_frame(t_track) - (ms_pre + ms_inf + ms_post) / frames:9.2f}",
+        f"    roi_check       {per_frame(t_roi):9.2f}   {t_roi / t_loop * 100:7.1f}%",
+        f"    annotate+write  {per_frame(t_write):9.2f}   {t_write / t_loop * 100:7.1f}%",
+        f"    logging         {per_frame(t_log):9.2f}   {t_log / t_loop * 100:7.1f}%",
+        "-" * 62,
+        "  TRACKING QUALITY",
+        f"    unique track ids seen in ROI : {len(unique_ids)}",
+        f"    peak concurrent in ROI       : {peak_concurrent}",
+        f"    completed dwell records      : {len(dwells)}",
+    ]
+    if dwells:
+        pct = len(short) / len(dwells) * 100
+        lines += [
+            f"    dwell < 1.0s (likely churn)  : {len(short)}  ({pct:.0f}%)",
+            f"    median dwell                 : {statistics.median(dwells):.2f}s",
+            f"    max dwell                    : {max(dwells):.2f}s",
+        ]
+    lines += ["=" * 62, ""]
+    logging.info("\n".join(lines))
 
 def queue_management():
     config = load_config()

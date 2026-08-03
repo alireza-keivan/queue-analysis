@@ -1,5 +1,7 @@
+import logging
 import os
 import tempfile
+import time
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -60,12 +62,16 @@ def handler(event):
     output_tmp = tempfile.NamedTemporaryFile(suffix=".avi", delete=False)
     cap = None
     writer = None
+    t_job_start = time.perf_counter()
     try:
+        a = time.perf_counter()
         with requests.get(video_url, stream=True) as r:
             r.raise_for_status()
             for chunk in r.iter_content(chunk_size=1 << 20):
                 input_tmp.write(chunk)
         input_tmp.close()
+        t_download = time.perf_counter() - a
+        input_mb = os.path.getsize(input_tmp.name) / 1e6
 
         cap = cap_check(input_tmp.name)
         if cap is None:
@@ -74,10 +80,14 @@ def handler(event):
         # Fresh QueueManager per job: reused tracker state (track_history,
         # ID counter, persist=True tracking) leaked across unrelated videos
         # when this was created once at cold start.
+        a = time.perf_counter()
         queue_manager = model_creator(config)
+        t_model_load = time.perf_counter() - a
 
         writer = video_writer(cap, output_tmp.name)
+        a = time.perf_counter()
         snapshots, tracks = video_processor(cap, queue_manager, writer, job_id)
+        t_process = time.perf_counter() - a
 
         # Release before upload: VideoWriter buffers frames until closed,
         # so the file on disk isn't complete until this happens.
@@ -85,8 +95,25 @@ def handler(event):
         cap = None
         writer.release()
         writer = None
+        output_mb = os.path.getsize(output_tmp.name) / 1e6
 
+        a = time.perf_counter()
         annotated_video_url = upload_annotated_video(output_tmp.name)
+        t_upload = time.perf_counter() - a
+
+        t_total = time.perf_counter() - t_job_start
+        logging.info(
+            "\n" + "=" * 62 + "\n"
+            f"JOB COST BREAKDOWN  job={job_id}\n"
+            f"  download    {t_download:7.1f}s  ({input_mb:.0f} MB in)\n"
+            f"  model load  {t_model_load:7.1f}s  <- paid on EVERY job\n"
+            f"  processing  {t_process:7.1f}s\n"
+            f"  upload      {t_upload:7.1f}s  ({output_mb:.0f} MB out)\n"
+            f"  TOTAL       {t_total:7.1f}s   "
+            f"(non-processing overhead: "
+            f"{(t_total - t_process) / t_total * 100:.0f}%)\n"
+            + "=" * 62
+        )
 
         return {
             "job_id": job_id,
