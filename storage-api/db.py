@@ -1,3 +1,5 @@
+import os
+
 import aiosqlite
 
 DB_PATH = "data/storage.db"
@@ -22,6 +24,9 @@ CREATE INDEX IF NOT EXISTS idx_tracks_job_id ON tracks (job_id);
 
 
 async def connect() -> aiosqlite.Connection:
+    # sqlite3 (and aiosqlite, which wraps it) will not create a missing
+    # parent directory - it only creates the .db file itself.
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = await aiosqlite.connect(DB_PATH)
     # One writer at a time either way (SQLite), but WAL lets reads happen
     # without waiting on an in-progress write, and busy_timeout makes a
