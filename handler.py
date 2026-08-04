@@ -16,6 +16,7 @@ from app.queue_management import (
     model_creator,
     video_processor,
 )
+from app.track_diagnostics import analyze_track_churn
 
 BUCKET_NAME = "Alireza-keivan"
 BUCKET_REGION = "us-east-005"
@@ -62,6 +63,7 @@ def handler(event):
     # skips rendering, encoding and uploading the output video entirely.
     target_fps = job_input.get("target_fps", config.get("TARGET_FPS", 10))
     annotate = job_input.get("annotate", True)
+    diagnostic = job_input.get("diagnostic", False)
 
     input_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     output_tmp = tempfile.NamedTemporaryFile(suffix=".avi", delete=False)
@@ -88,6 +90,18 @@ def handler(event):
         a = time.perf_counter()
         queue_manager = model_creator(config)
         t_model_load = time.perf_counter() - a
+
+        if diagnostic:
+            # Standalone analysis pass - full-frame, not ROI-filtered, and
+            # never touches upload/annotation. See app/track_diagnostics.py.
+            a = time.perf_counter()
+            report = analyze_track_churn(cap, queue_manager, target_fps=target_fps)
+            t_diag = time.perf_counter() - a
+            release_cap(cap)
+            cap = None
+            logging.info(f"Diagnostic pass took {t_diag:.1f}s: {report}")
+            return {"job_id": job_id, "model_load_s": round(t_model_load, 1),
+                    "diagnostic_s": round(t_diag, 1), "diagnostic": report}
 
         writer = video_writer(cap, output_tmp.name, target_fps)
         a = time.perf_counter()

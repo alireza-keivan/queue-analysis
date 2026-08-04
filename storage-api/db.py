@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL,
     timestamp REAL NOT NULL,
-    queue_count INTEGER NOT NULL
+    queue_count INTEGER NOT NULL,
+    inside_ids TEXT NOT NULL DEFAULT '[]',   -- JSON array of track_ids; SQLite has no array type
+    outside_ids TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_job_id ON snapshots (job_id);
 

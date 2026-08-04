@@ -86,8 +86,7 @@ def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=
 
     open_tracks = {}       # track_id -> entry_time (video-relative seconds)
     completed_tracks = []  # [{job_id, track_id, dwell_seconds}, ...]
-    snapshots = []         # [{job_id, timestamp, queue_count}, ...]
-    last_snapshot_second = None
+    snapshots = []         # [{job_id, timestamp, queue_count, inside_ids, outside_ids}, ...]
 
     # --- profiling accumulators (cheap; one summary logged at the end) ---
     t_decode = t_track = t_roi = t_write = t_log = 0.0
@@ -152,15 +151,16 @@ def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=
                     "dwell_seconds": current_time - entry_time,
                 })
 
-        # Snapshot once per whole second of video, not every frame.
-        current_second = int(current_time)
-        if current_second != last_snapshot_second:
-            snapshots.append({
-                "job_id": job_id,
-                "timestamp": current_time,
-                "queue_count": len(inside_ids),
-            })
-            last_snapshot_second = current_second
+        # One snapshot per processed frame (every 0.1s at target_fps=10) -
+        # fine enough for the dashboard's hover inspector to be meaningful.
+        outside_ids = [tid for tid in queue_manager.track_ids if tid not in inside_ids]
+        snapshots.append({
+            "job_id": job_id,
+            "timestamp": current_time,
+            "queue_count": len(inside_ids),
+            "inside_ids": inside_ids,
+            "outside_ids": outside_ids,
+        })
         t_roi += time.perf_counter() - a
 
         unique_ids.update(inside_ids)

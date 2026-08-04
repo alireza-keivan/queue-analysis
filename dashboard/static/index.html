@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queue Analysis</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div>
+        <h1>Queue Analysis</h1>
+        <p class="brand-sub">people-counting pipeline</p>
+      </div>
+    </div>
+    <div class="health" id="health">
+      <span class="pill" id="pill-storage">storage-api</span>
+      <span class="pill" id="pill-runpod">runpod</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <section class="panel">
+        <h2>New analysis</h2>
+        <form id="submit-form" class="form">
+          <label>
+            <span>Video URL</span>
+            <input type="url" id="video-url" required
+                   placeholder="https://.../video.mp4">
+          </label>
+          <div class="form-row">
+            <label>
+              <span>Target FPS</span>
+              <input type="number" id="target-fps" value="10" min="1" max="60">
+            </label>
+            <label class="check">
+              <input type="checkbox" id="annotate" checked>
+              <span>Annotate</span>
+            </label>
+          </div>
+          <button type="submit" id="submit-btn">Run analysis</button>
+          <p class="hint" id="submit-hint">
+            Processing runs on a GPU worker and can take a few minutes.
+          </p>
+        </form>
+      </section>
+
+      <section class="panel grow">
+        <div class="panel-head">
+          <h2>Jobs</h2>
+          <button class="ghost" id="refresh-btn" title="Refresh">↻</button>
+        </div>
+        <ul class="joblist" id="joblist"></ul>
+      </section>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="empty" id="empty-state">
+        <div class="empty-art"></div>
+        <h2>No job selected</h2>
+        <p>Pick a run from the left, or submit a new video to analyse.</p>
+      </div>
+
+      <div class="detail" id="detail" hidden>
+        <div class="detail-head">
+          <div>
+            <h2 id="detail-title">Job</h2>
+            <code class="jobid" id="detail-jobid"></code>
+          </div>
+          <div class="head-actions">
+            <a class="ghost-link" id="video-link" hidden target="_blank" rel="noopener">
+              annotated video ↗
+            </a>
+            <button class="ghost danger" id="delete-btn">Delete run</button>
+          </div>
+        </div>
+
+        <div class="tiles" id="tiles"></div>
+
+        <section class="card">
+          <div class="card-head">
+            <h3>Queue occupancy over time</h3>
+            <span class="card-sub" id="occupancy-sub"></span>
+          </div>
+          <div class="chart" id="chart-occupancy"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h3>Dwell time distribution</h3>
+            <span class="card-sub">
+              <span class="swatch swatch-warn"></span> under 1s — likely tracking churn
+            </span>
+          </div>
+          <div class="chart" id="chart-dwell"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h3>Tracks</h3></div>
+          <div class="tablewrap">
+            <table class="table" id="track-table">
+              <thead>
+                <tr><th>Track ID</th><th class="num">Dwell (s)</th><th>Confidence</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,18 +1,22 @@
 services:
-  web:
-    image: my-web-app:latest
+  storage-api:
+    build: ./storage-api
     ports:
-      - "80:80"
-    environment:
-      - ENV=production
-    depends_on:
-      - db
-
-  db:
-    image: postgres:13
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: mydatabase
+      - "8000:8000"          # exposed for direct curl/debugging
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - storage-api-data:/app/data
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "8080:8080"
+    environment:
+      # Service name, not localhost: compose puts both on the same network.
+      - STORAGE_API_URL=http://storage-api:8000
+      - RUNPOD_API_KEY=${RUNPOD_API_KEY:-}
+      - RUNPOD_ENDPOINT_ID=${RUNPOD_ENDPOINT_ID:-}
+    depends_on:
+      - storage-api
+
+volumes:
+  storage-api-data:
