@@ -1,4 +1,4 @@
-QUEUE_REGION : [[700, 200], [1720, 200], [1720, 700], [700, 700]]
+QUEUE_REGION : [[673, 785], [1125, 1078], [1862, 1005], [1094, 718]]
 MODEL : 'yolo26m.pt'
 VIDEO_WRITER: 'tests/queue_management.avi'
 TRACKER : 'app/trackers/botsort.yaml'
