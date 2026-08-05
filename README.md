@@ -9,6 +9,7 @@ A video comes in; a GPU spins up on demand, detects and tracks every person, mea
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![Ultralytics YOLO](https://img.shields.io/badge/Ultralytics-YOLO26-00FFFF?logo=ultralytics&logoColor=black)](https://docs.ultralytics.com/)
 [![RunPod](https://img.shields.io/badge/RunPod-Serverless%20GPU-673AB7)](https://www.runpod.io/)
+[![n8n](https://img.shields.io/badge/n8n-Workflow%20Automation-EA4B71?logo=n8n&logoColor=white)](https://n8n.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -20,6 +21,7 @@ A video comes in; a GPU spins up on demand, detects and tracks every person, mea
 3. On the GPU: **YOLO26** detects every person, **BoT-SORT + ReID** tracks them frame to frame, and each track is checked against a configurable **region of interest (ROI)** to determine queue occupancy and per-person dwell time.
 4. Results (per-frame occupancy, per-person dwell time, optional annotated video) are relayed into **storage-api**, a dedicated service that owns the database exclusively.
 5. The dashboard queries storage-api and renders interactive charts — including a hover inspector that shows exactly which track IDs were inside vs. outside the ROI at any 0.1s instant.
+6. Optionally, an **n8n** workflow watches job results and sends an alert automatically when a threshold is crossed (e.g. queue peak too high) — no one has to check the dashboard for it to be noticed.
 
 Every step above runs automatically end-to-end from a single request — nothing is manually stitched together.
 
@@ -40,8 +42,13 @@ flowchart LR
         S["main.py"] --> DB[("SQLite<br/>snapshots + tracks")]
     end
 
+    subgraph N8N["n8n — workflow automation"]
+        N["alert workflow"]
+    end
+
     B[("Backblaze B2<br/>annotated video")]
     SRC["Source video<br/>(URL)"]
+    MAIL[("Email / Slack /<br/>Google Sheets, etc.")]
 
     U -->|"1 · submit video URL"| D
     D -->|"2 · trigger job"| H
@@ -51,6 +58,9 @@ flowchart LR
     D -->|"6 · relay results"| S
     U -->|"7 · view charts, hover inspector"| D
     D -->|"query"| S
+    D -.->|"8 · notify on completion"| N
+    N -.->|"check thresholds"| S
+    N -.->|"9 · alert if exceeded"| MAIL
 ```
 
 ---
@@ -63,7 +73,8 @@ flowchart LR
 - **Interactive analytics dashboard** — occupancy-over-time and dwell-time charts built from scratch in SVG (no charting library, no CDN dependency), with a Google-Analytics-style hover readout showing the exact track IDs inside/outside the ROI at any sampled instant.
 - **Track-quality diagnostics** — a standalone analysis pass (`app/track_diagnostics.py`) classifies every lost track as occlusion-plausible or an unexplained "phantom" switch (zero box overlap with anyone else), and flags high-overlap identity-crossing events — turning "the tracker feels glitchy" into a measured percentage.
 - **Two-service architecture with a single source of truth** — `storage-api` is the only thing that ever touches the SQLite file; every other service talks to it over HTTP, avoiding SQLite's multi-writer/locking pitfalls entirely.
-- **One-command local orchestration** — `docker-compose up` brings up the dashboard and storage layer, networked together, with a named volume so data survives restarts.
+- **Automated alerting via n8n** — a self-hosted n8n instance watches job results and sends a notification (email, with Slack/Google Sheets as natural next steps) automatically when a configured threshold is crossed, with no manual monitoring.
+- **One-command local orchestration** — `docker-compose up` brings up the dashboard, storage layer, and automation layer, all networked together, with named volumes so data and workflows survive restarts.
 
 ---
 
@@ -78,7 +89,8 @@ flowchart LR
 | **`dashboard/`** | Triggers jobs, relays results into storage-api, renders interactive charts | FastAPI, vanilla JS, hand-built SVG charts |
 | **`submit_job.py`** | CLI alternative to the dashboard — submit a job and relay results from the terminal | Python, requests |
 | **Backblaze B2** | S3-compatible object storage for annotated output video | boto3 |
-| **`docker-compose.yml`** | Local orchestration of `storage-api` + `dashboard`, networked, with a persistent named volume | Docker Compose |
+| **n8n** | Workflow automation: watches job results and sends alerts when a threshold is crossed | n8n (self-hosted), SMTP |
+| **`docker-compose.yml`** | Local orchestration of `storage-api` + `dashboard` + `n8n`, networked, with persistent named volumes | Docker Compose |
 
 ---
 
@@ -99,6 +111,7 @@ flowchart LR
 | `BUCKET_ENDPOINT_URL` | RunPod handler | Backblaze B2 S3-compatible endpoint |
 | `BUCKET_ACCESS_KEY_ID` / `BUCKET_SECRET_ACCESS_KEY` | RunPod handler | B2 application key (not the master key) |
 | `STORAGE_API_URL` | dashboard | Set automatically by Compose (`http://storage-api:8000`) |
+| `N8N_TIMEZONE` | n8n | Timezone for schedule-based workflows (defaults to UTC) |
 
 ### Run the local services
 
@@ -112,6 +125,7 @@ docker compose up -d --build
 
 Dashboard: **http://localhost:8080**
 storage-api (direct access, for debugging): **http://localhost:8000**
+n8n (workflow automation): **http://localhost:5678**
 
 ---
 
@@ -167,6 +181,7 @@ queue_analysis/
 
 - Continuous/RTSP ingestion as the "record" half of a record-then-batch architecture.
 - Extend `track_diagnostics.py` to detect identity oscillation between two already-existing tracks (not just brand-new-ID phantom switches).
+- Additional n8n workflows: a Google Sheets audit log per job, and a self-monitoring workflow that alerts if `storage-api` or `dashboard` itself goes down.
 - Multi-camera support.
 
 ## License
