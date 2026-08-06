@@ -1,7 +1,7 @@
 import json
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 
 from db import connect
 from models import JobSummary, SnapshotIn, SnapshotOut, TrackIn, TrackOut
@@ -24,35 +24,40 @@ def get_db(request: Request):
     return request.app.state.db
 
 
-@app.get("/jobs", response_model=list[JobSummary])
-async def list_jobs(db=Depends(get_db)):
-    """One row per processing run, newest first."""
+async def _fetch_job_summaries(db, job_id: str | None = None) -> list[JobSummary]:
+    where = "WHERE job_id = ?" if job_id is not None else ""
+    params = (job_id,) if job_id is not None else ()
+
     cursor = await db.execute(
-        """
+        f"""
         SELECT job_id, COUNT(*), MAX(queue_count), AVG(queue_count),
                MAX(timestamp), MIN(id)
         FROM snapshots
+        {where}
         GROUP BY job_id
         ORDER BY MIN(id) DESC
-        """
+        """,
+        params,
     )
     snapshot_rows = await cursor.fetchall()
 
     cursor = await db.execute(
-        """
+        f"""
         SELECT job_id, COUNT(*), AVG(dwell_seconds), MAX(dwell_seconds)
         FROM tracks
+        {where}
         GROUP BY job_id
-        """
+        """,
+        params,
     )
     track_stats = {r[0]: (r[1], r[2], r[3]) for r in await cursor.fetchall()}
 
     jobs = []
-    for job_id, snap_count, peak, avg_q, duration, _ in snapshot_rows:
-        count, avg_dwell, max_dwell = track_stats.get(job_id, (0, 0.0, 0.0))
+    for jid, snap_count, peak, avg_q, duration, _ in snapshot_rows:
+        count, avg_dwell, max_dwell = track_stats.get(jid, (0, 0.0, 0.0))
         jobs.append(
             JobSummary(
-                job_id=job_id,
+                job_id=jid,
                 snapshot_count=snap_count,
                 track_count=count,
                 peak_queue=peak or 0,
@@ -63,6 +68,23 @@ async def list_jobs(db=Depends(get_db)):
             )
         )
     return jobs
+
+
+@app.get("/jobs", response_model=list[JobSummary])
+async def list_jobs(db=Depends(get_db)):
+    """One row per processing run, newest first."""
+    return await _fetch_job_summaries(db)
+
+
+@app.get("/jobs/{job_id}", response_model=JobSummary)
+async def get_job(job_id: str, db=Depends(get_db)):
+    """Aggregate for exactly one job. This is what n8n's alert workflow
+    should call - /jobs returns every job ever recorded, which fans out
+    into one execution per historical job instead of just the new one."""
+    jobs = await _fetch_job_summaries(db, job_id=job_id)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return jobs[0]
 
 
 @app.delete("/jobs/{job_id}")

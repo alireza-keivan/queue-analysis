@@ -10,3 +10,4 @@ storage-api/data/
 storage-api/__pycache__
 __pycache__/
 .claude/
+app/__pycache__/

@@ -17,6 +17,9 @@ from pydantic import BaseModel
 STORAGE_API_URL = os.environ.get("STORAGE_API_URL", "http://storage-api:8000")
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "")
+# Optional: n8n's webhook URL for the alert workflow. If unset, jobs simply
+# aren't announced to n8n - nothing else changes.
+N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "")
 
 # A cold worker plus a full video can take minutes; the browser waits on this.
 RUNPOD_TIMEOUT = 900.0
@@ -133,6 +136,17 @@ async def submit_job(req: SubmitRequest):
         for track in result.get("tracks", []):
             r = await client.post(f"{STORAGE_API_URL}/tracks", json=track)
             r.raise_for_status()
+
+    # Ping n8n so its alert workflow can react. Best-effort: n8n fetches its
+    # own data from storage-api once triggered, so this carries no payload
+    # beyond an identifier - and a notification failure here shouldn't hide
+    # an otherwise-successful, already-paid-for GPU job.
+    if N8N_WEBHOOK_URL:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(N8N_WEBHOOK_URL, json={"job_id": result.get("job_id")})
+        except httpx.HTTPError:
+            pass
 
     return {
         "job_id": result.get("job_id"),

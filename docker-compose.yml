@@ -15,6 +15,9 @@ services:
       - STORAGE_API_URL=http://storage-api:8000
       - RUNPOD_API_KEY=${RUNPOD_API_KEY:-}
       - RUNPOD_ENDPOINT_ID=${RUNPOD_ENDPOINT_ID:-}
+      # Set this once you have n8n's webhook Production URL, e.g.
+      # http://n8n:5678/webhook/<id> - service name, not localhost.
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-}
     depends_on:
       - storage-api
 
