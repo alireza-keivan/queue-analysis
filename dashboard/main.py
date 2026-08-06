@@ -6,8 +6,10 @@ data goes through storage-api, which remains the sole owner of the SQLite file.
 Browser -> dashboard -> storage-api -> SQLite
                      -> RunPod (GPU processing)
 """
+import asyncio
 import logging
 import os
+import time
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -98,11 +100,14 @@ async def submit_job(req: SubmitRequest):
             detail="RUNPOD_API_KEY / RUNPOD_ENDPOINT_ID are not set on the dashboard service.",
         )
 
+    auth = {"Authorization": f"Bearer {RUNPOD_API_KEY}"}
+    deadline = time.monotonic() + RUNPOD_TIMEOUT
+
     async with httpx.AsyncClient(timeout=RUNPOD_TIMEOUT) as client:
         try:
             response = await client.post(
                 f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync",
-                headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"},
+                headers=auth,
                 json={
                     "input": {
                         "video_url": req.video_url,
@@ -115,14 +120,36 @@ async def submit_job(req: SubmitRequest):
             logging.error(f"RunPod unreachable: {exc}")
             raise HTTPException(status_code=502, detail=f"RunPod unreachable: {exc}")
 
-    if response.status_code != 200:
-        logging.error(f"RunPod returned {response.status_code}: {response.text[:800]}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"RunPod returned {response.status_code}: {response.text[:400]}",
-        )
+        if response.status_code != 200:
+            logging.error(f"RunPod returned {response.status_code}: {response.text[:800]}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"RunPod returned {response.status_code}: {response.text[:400]}",
+            )
 
-    body = response.json()
+        body = response.json()
+
+        # /runsync only blocks up to RunPod's own internal wait window. A
+        # cold worker plus a slow job can outlast that window, in which case
+        # it hands back whatever status it has (IN_QUEUE/IN_PROGRESS) instead
+        # of the final result - that's not a failure, just not finished yet.
+        # Poll /status until it actually reaches a terminal state.
+        job_id_for_poll = body.get("id")
+        while body.get("status") in ("IN_QUEUE", "IN_PROGRESS") and job_id_for_poll:
+            if time.monotonic() > deadline:
+                logging.error(f"Timed out waiting for RunPod job: {str(body)[:800]}")
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"Timed out waiting for RunPod job to finish: {str(body)[:400]}",
+                )
+            await asyncio.sleep(3.0)
+            poll = await client.get(
+                f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id_for_poll}",
+                headers=auth,
+            )
+            poll.raise_for_status()
+            body = poll.json()
+
     if body.get("status") != "COMPLETED" or "output" not in body:
         logging.error(f"Job did not complete: {str(body)[:800]}")
         raise HTTPException(
