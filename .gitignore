@@ -12,3 +12,4 @@ __pycache__/
 .claude/
 app/__pycache__/
 dashboard_start.sh
+experiments/
