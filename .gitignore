@@ -11,3 +11,4 @@ storage-api/__pycache__
 __pycache__/
 .claude/
 app/__pycache__/
+dashboard_start.sh

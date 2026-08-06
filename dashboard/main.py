@@ -6,6 +6,7 @@ data goes through storage-api, which remains the sole owner of the SQLite file.
 Browser -> dashboard -> storage-api -> SQLite
                      -> RunPod (GPU processing)
 """
+import logging
 import os
 
 import httpx
@@ -13,6 +14,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 STORAGE_API_URL = os.environ.get("STORAGE_API_URL", "http://storage-api:8000")
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
@@ -109,9 +112,11 @@ async def submit_job(req: SubmitRequest):
                 },
             )
         except httpx.HTTPError as exc:
+            logging.error(f"RunPod unreachable: {exc}")
             raise HTTPException(status_code=502, detail=f"RunPod unreachable: {exc}")
 
     if response.status_code != 200:
+        logging.error(f"RunPod returned {response.status_code}: {response.text[:800]}")
         raise HTTPException(
             status_code=502,
             detail=f"RunPod returned {response.status_code}: {response.text[:400]}",
@@ -119,12 +124,14 @@ async def submit_job(req: SubmitRequest):
 
     body = response.json()
     if body.get("status") != "COMPLETED" or "output" not in body:
+        logging.error(f"Job did not complete: {str(body)[:800]}")
         raise HTTPException(
             status_code=502, detail=f"Job did not complete: {str(body)[:400]}"
         )
 
     result = body["output"]
     if "error" in result:
+        logging.error(f"Handler error: {result['error']}")
         raise HTTPException(status_code=400, detail=f"Handler error: {result['error']}")
 
     # Relay into storage-api. Done after processing succeeded, so a storage
