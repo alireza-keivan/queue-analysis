@@ -12,6 +12,18 @@ A video comes in; a GPU spins up on demand, detects and tracks every person, mea
 [![n8n](https://img.shields.io/badge/n8n-Workflow%20Automation-EA4B71?logo=n8n&logoColor=white)](https://n8n.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+<!-- PLACEHOLDER — hero image or GIF: the dashboard with a real job open (tiles + occupancy chart visible).
+     This is the first thing a visitor sees; pick the most visually complete screenshot you have.
+     Drop the file at docs/screenshots/hero.png (or .gif) and this line renders automatically. -->
+![Dashboard overview](docs/screenshots/hero.png)
+
+<!-- PLACEHOLDER — 60-90s walkthrough video (submit a video → watch it process → charts populate → hover the chart → an alert fires).
+     A plain committed .mp4 will NOT autoplay/embed on GitHub - either:
+       (a) drag the file directly into this README's edit box on github.com to get a real inline player, or
+       (b) host on YouTube (unlisted) / Loom and replace the line below with a thumbnail image linking out.
+     Delete this comment and the line below once you have one. -->
+**[▶ Watch the demo](#)**
+
 ---
 
 ## How it works
@@ -68,13 +80,57 @@ flowchart LR
 ## Key features
 
 - **On-demand GPU, not 24/7** — RunPod Serverless spins up a worker per job and shuts it down after; cost scales with actual usage, not wall-clock time.
-- **Cost-engineered pipeline** — configurable frame-rate sampling (`target_fps`), zero-copy frame skipping (`cap.grab()`/`retrieve()`), and an `annotate` toggle to skip rendering/upload entirely when only metrics are needed. Combined, these cut per-job GPU time by roughly 10x on the reference video.
+- **Cost-engineered pipeline, backed by real numbers** — configurable frame-rate sampling (`target_fps`), zero-copy frame skipping (`cap.grab()`/`retrieve()`), and an `annotate` toggle to skip rendering/upload entirely when only metrics are needed. Measured on the reference video:
+
+  ```
+  JOB COST BREAKDOWN
+    download    2.6s   (40 MB in)
+    model load  2.9s   <- paid on every job, by design (see Known limitations)
+    processing 38.4s
+    upload      7.2s   (53 MB out)
+    TOTAL      51.1s   (non-processing overhead: 25%)
+  ```
+  Frame-rate tuning alone cut per-job GPU time by roughly **10x** on this video.
+
 - **Correctness-first tracking** — a fresh tracker is instantiated per job (not reused across unrelated videos on a warm worker), eliminating identity leakage between jobs.
 - **Interactive analytics dashboard** — occupancy-over-time and dwell-time charts built from scratch in SVG (no charting library, no CDN dependency), with a Google-Analytics-style hover readout showing the exact track IDs inside/outside the ROI at any sampled instant.
-- **Track-quality diagnostics** — a standalone analysis pass (`app/track_diagnostics.py`) classifies every lost track as occlusion-plausible or an unexplained "phantom" switch (zero box overlap with anyone else), and flags high-overlap identity-crossing events — turning "the tracker feels glitchy" into a measured percentage.
+- **Track-quality diagnostics, measured not guessed** — a standalone analysis pass (`app/track_diagnostics.py`) classifies every lost track as occlusion-plausible or an unexplained "phantom" switch, and flags high-overlap identity-crossing events. Real output from the reference video:
+
+  ```
+  total_distinct_ids: 88          track_endings_analyzed: 78
+  occlusion_plausible_endings: 63 (81%)
+  phantom_endings_no_overlap: 15  (19%)   <- zero physical explanation, not a guess
+  crossing_events: 924            (107 unique id-pairs)
+  ```
+  Turning "the tracker feels glitchy" into a measured percentage is the difference between debugging by feel and debugging with evidence.
+
 - **Two-service architecture with a single source of truth** — `storage-api` is the only thing that ever touches the SQLite file; every other service talks to it over HTTP, avoiding SQLite's multi-writer/locking pitfalls entirely.
+- **Authenticated internally** — `storage-api` requires a shared-secret header on every route (fails closed if unset, not open), since it's reachable from other containers on the network.
 - **Automated alerting via n8n** — a self-hosted n8n instance watches job results and sends a notification (email, with Slack/Google Sheets as natural next steps) automatically when a configured threshold is crossed, with no manual monitoring.
 - **One-command local orchestration** — `docker-compose up` brings up the dashboard, storage layer, and automation layer, all networked together, with named volumes so data and workflows survive restarts.
+
+---
+
+## Screenshots
+
+<!-- PLACEHOLDER gallery. Suggested filenames below already match what's referenced -
+     drop a file at each path and it renders with no further README edits needed. -->
+
+**Interactive occupancy chart — hover inspector**
+<!-- Must be a GIF, not a static image - the point is showing the hover interaction itself. -->
+![Hover inspector](docs/screenshots/hover-inspector.gif)
+
+**Dwell-time distribution and per-track breakdown**
+![Dwell analysis](docs/screenshots/dwell-analysis.png)
+
+**Annotated output — detection, tracking IDs, and ROI overlay on real footage**
+![Annotated frame](docs/screenshots/annotated-frame.png)
+
+**n8n automation workflow**
+![n8n workflow](docs/screenshots/n8n-workflow.png)
+
+**Google Sheets audit log**
+![Sheets log](docs/screenshots/sheets-log.png)
 
 ---
 
@@ -85,7 +141,7 @@ flowchart LR
 | **`handler.py`** (RunPod) | Downloads video, runs detection + tracking, computes occupancy/dwell metrics, optionally uploads annotated output | Python, Ultralytics YOLO26, BoT-SORT, OpenCV, boto3 |
 | **`app/queue_management.py`** | Core video-processing pipeline: config loading, frame-rate control, ROI containment, track lifecycle (entry/exit → dwell time) | Python, OpenCV, NumPy |
 | **`app/track_diagnostics.py`** | Standalone tracking-quality analysis: occlusion vs. phantom ID loss, identity-crossing detection | Python |
-| **`storage-api/`** | Sole owner of the database; REST API for snapshots, tracks, per-job aggregates | FastAPI, aiosqlite (async SQLite) |
+| **`storage-api/`** | Sole owner of the database; authenticated REST API for snapshots, tracks, per-job aggregates | FastAPI, aiosqlite (async SQLite) |
 | **`dashboard/`** | Triggers jobs, relays results into storage-api, renders interactive charts | FastAPI, vanilla JS, hand-built SVG charts |
 | **`submit_job.py`** | CLI alternative to the dashboard — submit a job and relay results from the terminal | Python, requests |
 | **Backblaze B2** | S3-compatible object storage for annotated output video | boto3 |
@@ -111,6 +167,8 @@ flowchart LR
 | `BUCKET_ENDPOINT_URL` | RunPod handler | Backblaze B2 S3-compatible endpoint |
 | `BUCKET_ACCESS_KEY_ID` / `BUCKET_SECRET_ACCESS_KEY` | RunPod handler | B2 application key (not the master key) |
 | `STORAGE_API_URL` | dashboard | Set automatically by Compose (`http://storage-api:8000`) |
+| `STORAGE_API_SECRET` | dashboard + storage-api | Shared secret required on every storage-api request; compose refuses to start without it |
+| `N8N_WEBHOOK_URL` | dashboard | n8n's webhook Production URL, pinged after each job completes |
 | `N8N_TIMEZONE` | n8n | Timezone for schedule-based workflows (defaults to UTC) |
 
 ### Run the local services
@@ -120,6 +178,7 @@ git clone https://github.com/alireza-keivan/queue-analysis.git
 cd queue-analysis
 export RUNPOD_API_KEY=...
 export RUNPOD_ENDPOINT_ID=...
+export STORAGE_API_SECRET=...   # any random string; storage-api and dashboard must share it
 docker compose up -d --build
 ```
 
@@ -166,6 +225,7 @@ queue_analysis/
 │   ├── main.py
 │   └── static/  (index.html, app.js, style.css)
 ├── submit_job.py               # CLI job submission + storage relay
+├── docs/screenshots/           # README media
 └── docker-compose.yml          # local orchestration
 ```
 
@@ -176,13 +236,16 @@ queue_analysis/
 - No continuous/live camera ingestion yet — video is submitted by URL per job, not streamed from a live source.
 - Tracking accuracy degrades in dense, closely-crossing crowds; `app/track_diagnostics.py` exists specifically to measure this rather than paper over it.
 - SQLite is appropriate at current scale (single-writer, owned exclusively by `storage-api`) but would need to move to a concurrent-writer database (e.g. Postgres) if multiple simultaneous camera sources are added.
+- No automated test suite yet over the pure-function logic (ROI containment, dwell-time lifecycle, frame-stride math).
 
 ## Roadmap
 
 - Continuous/RTSP ingestion as the "record" half of a record-then-batch architecture.
 - Extend `track_diagnostics.py` to detect identity oscillation between two already-existing tracks (not just brand-new-ID phantom switches).
-- Additional n8n workflows: a Google Sheets audit log per job, and a self-monitoring workflow that alerts if `storage-api` or `dashboard` itself goes down.
+- Split detection from tracking into a two-pass pipeline (batch GPU detection, then CPU-side association), since tracking currently accounts for the majority of per-frame compute — not detection.
+- Additional n8n workflows: a self-monitoring workflow that alerts if `storage-api` or `dashboard` itself goes down.
 - Multi-camera support.
+- Generalize the ROI containment check from a single hardcoded rule into a configurable rule set — the same underlying pattern (track lifecycle → event → rule check) extends naturally to classifying arbitrary events against custom reference criteria.
 
 ## License
 
