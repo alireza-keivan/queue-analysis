@@ -20,6 +20,8 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 STORAGE_API_URL = os.environ.get("STORAGE_API_URL", "http://storage-api:8000")
+STORAGE_API_SECRET = os.environ.get("STORAGE_API_SECRET", "")
+STORAGE_HEADERS = {"X-API-Key": STORAGE_API_SECRET}
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "")
 # Optional: n8n's webhook URL for the alert workflow. If unset, jobs simply
@@ -35,7 +37,7 @@ app = FastAPI(title="queue-analysis dashboard")
 class SubmitRequest(BaseModel):
     video_url: str
     target_fps: int = 10
-    annotate: bool = True
+    annotate: bool = True # False
 
 
 @app.get("/api/health")
@@ -44,7 +46,7 @@ async def health():
     storage_ok = False
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.get(f"{STORAGE_API_URL}/jobs")
+            r = await client.get(f"{STORAGE_API_URL}/jobs", headers=STORAGE_HEADERS)
             storage_ok = r.status_code == 200
     except httpx.HTTPError:
         pass
@@ -57,7 +59,7 @@ async def health():
 @app.get("/api/jobs")
 async def list_jobs():
     async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"{STORAGE_API_URL}/jobs")
+        r = await client.get(f"{STORAGE_API_URL}/jobs", headers=STORAGE_HEADERS)
         r.raise_for_status()
         return r.json()
 
@@ -66,10 +68,10 @@ async def list_jobs():
 async def job_detail(job_id: str):
     async with httpx.AsyncClient(timeout=30.0) as client:
         snapshots = await client.get(
-            f"{STORAGE_API_URL}/snapshots", params={"job_id": job_id}
+            f"{STORAGE_API_URL}/snapshots", params={"job_id": job_id}, headers=STORAGE_HEADERS
         )
         tracks = await client.get(
-            f"{STORAGE_API_URL}/tracks", params={"job_id": job_id}
+            f"{STORAGE_API_URL}/tracks", params={"job_id": job_id}, headers=STORAGE_HEADERS
         )
         snapshots.raise_for_status()
         tracks.raise_for_status()
@@ -83,7 +85,7 @@ async def job_detail(job_id: str):
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str):
     async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.delete(f"{STORAGE_API_URL}/jobs/{job_id}")
+        r = await client.delete(f"{STORAGE_API_URL}/jobs/{job_id}", headers=STORAGE_HEADERS)
         r.raise_for_status()
         return r.json()
 
@@ -165,10 +167,10 @@ async def submit_job(req: SubmitRequest):
     # failure here doesn't hide a successful (already paid for) GPU run.
     async with httpx.AsyncClient(timeout=60.0) as client:
         for snapshot in result.get("snapshots", []):
-            r = await client.post(f"{STORAGE_API_URL}/snapshots", json=snapshot)
+            r = await client.post(f"{STORAGE_API_URL}/snapshots", json=snapshot, headers=STORAGE_HEADERS)
             r.raise_for_status()
         for track in result.get("tracks", []):
-            r = await client.post(f"{STORAGE_API_URL}/tracks", json=track)
+            r = await client.post(f"{STORAGE_API_URL}/tracks", json=track, headers=STORAGE_HEADERS)
             r.raise_for_status()
 
     # Ping n8n so its alert workflow can react. Best-effort: n8n fetches its

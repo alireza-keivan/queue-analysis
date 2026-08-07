@@ -1,10 +1,16 @@
 import json
+import os
+import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 
 from db import connect
 from models import JobSummary, SnapshotIn, SnapshotOut, TrackIn, TrackOut
+
+# No default: an unset secret must fail closed, not silently allow every
+# request through. See verify_api_key below.
+API_SECRET = os.environ.get("STORAGE_API_SECRET", "")
 
 
 @asynccontextmanager
@@ -17,7 +23,18 @@ async def lifespan(app: FastAPI):
     await app.state.db.close()
 
 
-app = FastAPI(title="queue-analysis storage-api", lifespan=lifespan)
+async def verify_api_key(x_api_key: str = Header(default="")):
+    # compare_digest avoids leaking the secret's length/prefix through
+    # response-timing differences.
+    if not API_SECRET or not secrets.compare_digest(x_api_key, API_SECRET):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key")
+
+
+app = FastAPI(
+    title="queue-analysis storage-api",
+    lifespan=lifespan,
+    dependencies=[Depends(verify_api_key)],  # applies to every route below
+)
 
 
 def get_db(request: Request):

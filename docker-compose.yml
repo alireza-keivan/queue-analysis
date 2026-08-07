@@ -3,6 +3,10 @@ services:
     build: ./storage-api
     ports:
       - "8000:8000"  # exposed for direct curl/debugging
+    environment:
+      # ":?" (not ":-") - fail loudly at startup if this is missing, rather
+      # than silently running with auth effectively disabled.
+      - STORAGE_API_SECRET=${STORAGE_API_SECRET:?Set STORAGE_API_SECRET in your .env file}
     volumes:
       - storage-api-data:/app/data
 
@@ -13,6 +17,7 @@ services:
     environment:
       # Service name, not localhost: compose puts both on the same network.
       - STORAGE_API_URL=http://storage-api:8000
+      - STORAGE_API_SECRET=${STORAGE_API_SECRET:?Set STORAGE_API_SECRET in your .env file}
       - RUNPOD_API_KEY=${RUNPOD_API_KEY:-}
       - RUNPOD_ENDPOINT_ID=${RUNPOD_ENDPOINT_ID:-}
       # Set this once you have n8n's webhook Production URL, e.g.
