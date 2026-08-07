@@ -143,7 +143,6 @@ flowchart LR
 | **`app/track_diagnostics.py`** | Standalone tracking-quality analysis: occlusion vs. phantom ID loss, identity-crossing detection | Python |
 | **`storage-api/`** | Sole owner of the database; authenticated REST API for snapshots, tracks, per-job aggregates | FastAPI, aiosqlite (async SQLite) |
 | **`dashboard/`** | Triggers jobs, relays results into storage-api, renders interactive charts | FastAPI, vanilla JS, hand-built SVG charts |
-| **`submit_job.py`** | CLI alternative to the dashboard — submit a job and relay results from the terminal | Python, requests |
 | **Backblaze B2** | S3-compatible object storage for annotated output video | boto3 |
 | **n8n** | Workflow automation: watches job results and sends alerts when a threshold is crossed | n8n (self-hosted), SMTP |
 | **`docker-compose.yml`** | Local orchestration of `storage-api` + `dashboard` + `n8n`, networked, with persistent named volumes | Docker Compose |
@@ -192,12 +191,7 @@ n8n (workflow automation): **http://localhost:5678**
 
 **Via the dashboard** — open http://localhost:8080, paste a video URL, set the target FPS and whether to keep the annotated output, and click **Run analysis**. Results appear automatically: occupancy chart, dwell-time histogram, and a per-job track table. Hover the occupancy chart to see exactly which track IDs were in/out of the ROI at any instant.
 
-**Via the CLI:**
-```bash
-python submit_job.py https://example.com/video.mp4
-```
-
-**Directly against RunPod:**
+**Directly against RunPod** (what the dashboard itself calls under the hood):
 ```bash
 curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
   -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
@@ -224,7 +218,6 @@ queue_analysis/
 ├── dashboard/                  # orchestration UI
 │   ├── main.py
 │   └── static/  (index.html, app.js, style.css)
-├── submit_job.py               # CLI job submission + storage relay
 ├── docs/screenshots/           # README media
 └── docker-compose.yml          # local orchestration
 ```
