@@ -124,18 +124,21 @@ def handler(event):
         t_upload = time.perf_counter() - a
 
         t_total = time.perf_counter() - t_job_start
-        logging.info(
-            "\n" + "=" * 62 + "\n"
-            f"JOB COST BREAKDOWN  job={job_id}\n"
-            f"  download    {t_download:7.1f}s  ({input_mb:.0f} MB in)\n"
-            f"  model load  {t_model_load:7.1f}s  <- paid on EVERY job\n"
-            f"  processing  {t_process:7.1f}s\n"
-            f"  upload      {t_upload:7.1f}s  ({output_mb:.0f} MB out)\n"
+        # One logging.info() per line - a single large multi-line entry was
+        # observed to get silently truncated by RunPod's log pipeline.
+        for line in [
+            "=" * 62,
+            f"JOB COST BREAKDOWN  job={job_id}",
+            f"  download    {t_download:7.1f}s  ({input_mb:.0f} MB in)",
+            f"  model load  {t_model_load:7.1f}s  <- paid on EVERY job",
+            f"  processing  {t_process:7.1f}s",
+            f"  upload      {t_upload:7.1f}s  ({output_mb:.0f} MB out)",
             f"  TOTAL       {t_total:7.1f}s   "
             f"(non-processing overhead: "
-            f"{(t_total - t_process) / t_total * 100:.0f}%)\n"
-            + "=" * 62
-        )
+            f"{(t_total - t_process) / t_total * 100:.0f}%)",
+            "=" * 62,
+        ]:
+            logging.info(line)
 
         return {
             "job_id": job_id,

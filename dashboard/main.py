@@ -37,7 +37,7 @@ app = FastAPI(title="queue-analysis dashboard")
 class SubmitRequest(BaseModel):
     video_url: str
     target_fps: int = 10
-    annotate: bool = True # False
+    annotate: bool = True
 
 
 @app.get("/api/health")

@@ -249,7 +249,12 @@ def _log_profile(job_id, frames, src_frames, src_fps, effective_fps, t_loop,
             f"    max dwell                    : {max(dwells):.2f}s",
         ]
     lines += ["=" * 62, ""]
-    logging.info("\n".join(lines))
+    # One logging.info() call per line, not one call for the whole block -
+    # RunPod's log pipeline appears to silently truncate a single very long
+    # multi-line log entry (this block went missing past the header on a
+    # real run). Many small entries survive where one large one didn't.
+    for line in lines:
+        logging.info(line)
 
 def queue_management():
     config = load_config()

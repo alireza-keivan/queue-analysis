@@ -257,6 +257,11 @@ button:disabled { opacity: .55; cursor: progress; }
 /* ---------- main ---------- */
 .main { min-width: 0; }
 
+/* .empty and .detail both set their own `display`, which otherwise beats
+   the browser's default [hidden]{display:none} rule on specificity - so
+   toggling .hidden in JS silently did nothing to these two. */
+.empty[hidden], .detail[hidden] { display: none; }
+
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   text-align: center;
