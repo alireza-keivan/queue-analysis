@@ -128,6 +128,27 @@ async def create_snapshot(snapshot: SnapshotIn, db=Depends(get_db)):
     return SnapshotOut(id=cursor.lastrowid, **snapshot.model_dump())
 
 
+@app.post("/snapshots/bulk")
+async def create_snapshots_bulk(snapshots: list[SnapshotIn], db=Depends(get_db)):
+    """Same insert as POST /snapshots, but one round trip and one commit for
+    the whole batch instead of one of each per row - a full job's worth of
+    snapshots (hundreds) was measured at ~7ms/row through the single-row
+    endpoint, almost all of it per-request overhead, not the insert itself."""
+    if not snapshots:
+        return {"inserted": 0}
+    await db.executemany(
+        "INSERT INTO snapshots (job_id, timestamp, queue_count, inside_ids, outside_ids) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            (s.job_id, s.timestamp, s.queue_count,
+             json.dumps(s.inside_ids), json.dumps(s.outside_ids))
+            for s in snapshots
+        ],
+    )
+    await db.commit()
+    return {"inserted": len(snapshots)}
+
+
 @app.get("/snapshots", response_model=list[SnapshotOut])
 async def list_snapshots(job_id: str | None = Query(default=None), db=Depends(get_db)):
     cols = "id, job_id, timestamp, queue_count, inside_ids, outside_ids"
@@ -155,6 +176,19 @@ async def create_track(track: TrackIn, db=Depends(get_db)):
     )
     await db.commit()
     return TrackOut(id=cursor.lastrowid, **track.model_dump())
+
+
+@app.post("/tracks/bulk")
+async def create_tracks_bulk(tracks: list[TrackIn], db=Depends(get_db)):
+    """See create_snapshots_bulk - same reasoning, applied to tracks."""
+    if not tracks:
+        return {"inserted": 0}
+    await db.executemany(
+        "INSERT INTO tracks (job_id, track_id, dwell_seconds) VALUES (?, ?, ?)",
+        [(t.job_id, t.track_id, t.dwell_seconds) for t in tracks],
+    )
+    await db.commit()
+    return {"inserted": len(tracks)}
 
 
 @app.get("/tracks", response_model=list[TrackOut])

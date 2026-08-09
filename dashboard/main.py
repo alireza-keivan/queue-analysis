@@ -165,12 +165,17 @@ async def submit_job(req: SubmitRequest):
 
     # Relay into storage-api. Done after processing succeeded, so a storage
     # failure here doesn't hide a successful (already paid for) GPU run.
+    # Bulk endpoints: one round trip and one commit per table instead of one
+    # of each per row (a few hundred snapshots per job otherwise means a few
+    # hundred HTTP calls and SQLite commits).
+    snapshots = result.get("snapshots", [])
+    tracks = result.get("tracks", [])
     async with httpx.AsyncClient(timeout=60.0) as client:
-        for snapshot in result.get("snapshots", []):
-            r = await client.post(f"{STORAGE_API_URL}/snapshots", json=snapshot, headers=STORAGE_HEADERS)
+        if snapshots:
+            r = await client.post(f"{STORAGE_API_URL}/snapshots/bulk", json=snapshots, headers=STORAGE_HEADERS)
             r.raise_for_status()
-        for track in result.get("tracks", []):
-            r = await client.post(f"{STORAGE_API_URL}/tracks", json=track, headers=STORAGE_HEADERS)
+        if tracks:
+            r = await client.post(f"{STORAGE_API_URL}/tracks/bulk", json=tracks, headers=STORAGE_HEADERS)
             r.raise_for_status()
 
     # Ping n8n so its alert workflow can react. Best-effort: n8n fetches its
