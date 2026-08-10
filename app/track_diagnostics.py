@@ -9,11 +9,6 @@ Runs full-frame (not ROI-filtered) since the failure examples that prompted
 this - a stationary person alone in frame, a crowd crossing - aren't
 necessarily inside the queue region.
 """
-import cv2
-
-from app.queue_management import frame_stride
-
-
 def _iou(box_a, box_b):
     ax1, ay1, ax2, ay2 = box_a
     bx1, by1, bx2, by2 = box_b
@@ -27,9 +22,20 @@ def _iou(box_a, box_b):
     return inter / union if union > 0 else 0.0
 
 
-def analyze_track_churn(cap, queue_manager, target_fps=10,
-                          overlap_thresh=0.05, renumber_frames=3, renumber_iou=0.3,
-                          crossing_iou=0.15):
+def collect_track_history(cap, queue_manager, target_fps=10):
+    """GPU-bound pass: runs the model over every processed frame and records
+    each track's box. This is the only half of the old analyze_track_churn
+    that actually needs the GPU worker - see score_track_churn for the pure
+    CPU pass that used to run inline with it.
+
+    cv2/queue_management are imported lazily here (not at module level) so
+    that importing score_track_churn - the half a CPU-only worker needs -
+    never pulls in cv2 or the full ultralytics/torch stack.
+    """
+    import cv2
+
+    from app.queue_management import frame_stride
+
     stride, _ = frame_stride(cap, target_fps)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or float(target_fps)
 
@@ -52,6 +58,14 @@ def analyze_track_churn(cap, queue_manager, target_fps=10,
             for tid, box in zip(queue_manager.track_ids, queue_manager.boxes)
         })
 
+    return history, stride, src_fps
+
+
+def score_track_churn(history, stride, src_fps, overlap_thresh=0.05,
+                       renumber_frames=3, renumber_iou=0.3, crossing_iou=0.15):
+    """Pure CPU pass over an already-collected history - no model, no cv2, no
+    GPU. Safe to run anywhere: a laptop, the dashboard service, a CI box.
+    """
     first_seen, last_seen = {}, {}
     for i, frame in enumerate(history):
         for tid in frame:
@@ -109,3 +123,13 @@ def analyze_track_churn(cap, queue_manager, target_fps=10,
         "renumber_candidates": renumber_candidates,
         "crossing_events": crossings,
     }
+
+
+def analyze_track_churn(cap, queue_manager, target_fps=10, **score_kwargs):
+    """Convenience wrapper: collect + score in one call, for local/one-off
+    use. The GPU handler no longer calls this directly - it calls
+    collect_track_history itself and leaves scoring to the CPU-only RunPod
+    endpoint (see cpu_handler.py).
+    """
+    history, stride, src_fps = collect_track_history(cap, queue_manager, target_fps)
+    return score_track_churn(history, stride, src_fps, **score_kwargs)

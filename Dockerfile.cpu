@@ -1,0 +1,16 @@
+# CPU-only RunPod Serverless worker - deploy on a CPU (no GPU) worker type.
+# Deliberately python:3.12-slim, not the pytorch/cuda image handler.py's
+# Dockerfile uses - this image must never need torch/ultralytics/cv2, or the
+# whole point of a cheaper CPU endpoint is lost.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements-cpu.txt requirements-cpu.txt
+RUN pip install --no-cache-dir -r requirements-cpu.txt
+
+# Only what cpu_handler.py actually imports - not the full repo.
+COPY app/track_diagnostics.py app/track_diagnostics.py
+COPY cpu_handler.py cpu_handler.py
+
+CMD ["python", "cpu_handler.py"]

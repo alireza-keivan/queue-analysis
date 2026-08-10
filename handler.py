@@ -16,7 +16,7 @@ from app.queue_management import (
     model_creator,
     video_processor,
 )
-from app.track_diagnostics import analyze_track_churn
+from app.track_diagnostics import collect_track_history
 
 BUCKET_NAME = "Alireza-keivan"
 BUCKET_REGION = "us-east-005"
@@ -93,15 +93,28 @@ def handler(event):
 
         if diagnostic:
             # Standalone analysis pass - full-frame, not ROI-filtered, and
-            # never touches upload/annotation. See app/track_diagnostics.py.
+            # never touches upload/annotation. Only the GPU-bound collection
+            # runs here; the churn scoring is pure CPU math with no model or
+            # cv2 involved, so it deliberately does NOT run on this paid GPU
+            # worker - run score_diagnostic.py against this output instead.
+            # See app/track_diagnostics.py.
             a = time.perf_counter()
-            report = analyze_track_churn(cap, queue_manager, target_fps=target_fps)
+            history, stride, src_fps = collect_track_history(cap, queue_manager, target_fps=target_fps)
             t_diag = time.perf_counter() - a
             release_cap(cap)
             cap = None
-            logging.info(f"Diagnostic pass took {t_diag:.1f}s: {report}")
-            return {"job_id": job_id, "model_load_s": round(t_model_load, 1),
-                    "diagnostic_s": round(t_diag, 1), "diagnostic": report}
+            logging.info(f"Diagnostic collection took {t_diag:.1f}s over {len(history)} frames")
+            return {
+                "job_id": job_id,
+                "model_load_s": round(t_model_load, 1),
+                "collection_s": round(t_diag, 1),
+                "stride": stride,
+                "src_fps": src_fps,
+                "history": [
+                    {str(tid): list(box) for tid, box in frame.items()}
+                    for frame in history
+                ],
+            }
 
         writer = video_writer(cap, output_tmp.name, target_fps)
         a = time.perf_counter()
