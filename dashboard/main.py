@@ -38,6 +38,10 @@ class SubmitRequest(BaseModel):
     video_url: str
     target_fps: int = 10
     annotate: bool = True
+    # [[x, y], ...] in source-video pixel coords, picked in the browser ROI
+    # editor. None means "use queue.yaml's default region" - never written to
+    # any file, just passed through on this one job's request.
+    region: list[list[float]] | None = None
 
 
 @app.get("/api/health")
@@ -115,6 +119,7 @@ async def submit_job(req: SubmitRequest):
                         "video_url": req.video_url,
                         "target_fps": req.target_fps,
                         "annotate": req.annotate,
+                        **({"region": req.region} if req.region else {}),
                     }
                 },
             )

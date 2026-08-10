@@ -58,12 +58,14 @@ def video_writer(capture, path, target_fps):
                 effective_fps, (w, h))
     return writer
 
-def model_creator(config):
-    # Initialize queue manager object
+def model_creator(config, region=None):
+    # region overrides config["QUEUE_REGION"] when the caller (e.g. a
+    # per-job ROI picked in the dashboard) supplies one; falls back to the
+    # yaml default otherwise.
     queuemanager = solutions.QueueManager(
         show=False,  # display the output
         model=config["MODEL"],  # path to the YOLO26 model file
-        region=config["QUEUE_REGION"],
+        region=region or config["QUEUE_REGION"],
         tracker=config["TRACKER"],
         conf=config["CONF"],
         iou=config["IOU"],

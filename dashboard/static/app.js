@@ -416,6 +416,126 @@ async function selectJob(jobId) {
 }
 
 /* ------------------------------------------------------------------ */
+/* ROI editor - entirely client-side: the browser already has to decode  */
+/* the video to play it back, so drawing a click-to-pick overlay on top  */
+/* costs nothing extra server-side. Points are kept as {fx, fy} fractions */
+/* of the video frame (resolution-independent for drawing) and converted */
+/* to native pixel coordinates - the space handler.py's ROI check uses -  */
+/* only when building the submit payload.                                */
+/* ------------------------------------------------------------------ */
+
+const roi = { points: [], video: null, canvas: null, ctx: null };
+
+function roiRedraw() {
+  const { ctx, canvas, points } = roi;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!points.length) return;
+
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#2ad3bb";
+  ctx.fillStyle = "rgba(42, 211, 187, 0.22)";
+
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = p.fx * canvas.width, y = p.fy * canvas.height;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  if (points.length >= 3) ctx.closePath();
+  ctx.stroke();
+  if (points.length >= 3) ctx.fill();
+
+  points.forEach((p) => {
+    const x = p.fx * canvas.width, y = p.fy * canvas.height;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = "#2ad3bb";
+    ctx.fill();
+  });
+}
+
+function roiUpdateStatus() {
+  const status = $("roi-status");
+  const n = roi.points.length;
+  if (!roi.video) {
+    status.textContent = "Using the default ROI from queue.yaml.";
+  } else if (n < 3) {
+    status.textContent = `Click at least 3 points to draw the queue area (${n} so far).`;
+  } else {
+    status.textContent = `Custom ROI set - ${n} points. This job will use it instead of queue.yaml's default.`;
+  }
+}
+
+function roiSizeCanvas() {
+  const { video, canvas } = roi;
+  canvas.width = video.clientWidth;
+  canvas.height = video.clientHeight;
+  roiRedraw();
+}
+
+$("roi-preview-btn").addEventListener("click", () => {
+  const url = $("video-url").value.trim();
+  if (!url) { toast("Enter a video URL first.", true); return; }
+
+  const video = $("roi-video");
+  const canvas = $("roi-canvas");
+  roi.video = video;
+  roi.canvas = canvas;
+  roi.ctx = canvas.getContext("2d");
+  roi.points = [];
+
+  video.src = url;
+  $("roi-stage").hidden = false;
+  $("roi-undo-btn").hidden = false;
+  $("roi-clear-btn").hidden = false;
+
+  video.addEventListener("loadedmetadata", () => {
+    const seek = $("roi-seek");
+    seek.hidden = false;
+    seek.max = video.duration || 1;
+    seek.value = Math.min(1, video.duration || 1); // 1s in: past a black/empty opening frame
+    video.currentTime = parseFloat(seek.value);
+  }, { once: true });
+
+  video.addEventListener("seeked", roiSizeCanvas);
+  window.addEventListener("resize", () => { if (roi.video) roiSizeCanvas(); });
+
+  roiUpdateStatus();
+}, { once: false });
+
+$("roi-seek").addEventListener("input", (e) => {
+  if (roi.video) roi.video.currentTime = parseFloat(e.target.value);
+});
+
+$("roi-canvas").addEventListener("click", (e) => {
+  const rect = roi.canvas.getBoundingClientRect();
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  roi.points.push({ fx, fy });
+  roiRedraw();
+  roiUpdateStatus();
+});
+
+$("roi-undo-btn").addEventListener("click", () => {
+  roi.points.pop();
+  roiRedraw();
+  roiUpdateStatus();
+});
+
+$("roi-clear-btn").addEventListener("click", () => {
+  roi.points = [];
+  roiRedraw();
+  roiUpdateStatus();
+});
+
+/** Native-pixel-coordinate polygon for the job payload, or null if fewer
+ * than 3 points were picked (i.e. use queue.yaml's default region). */
+function roiPayload() {
+  if (!roi.video || roi.points.length < 3) return null;
+  const w = roi.video.videoWidth, h = roi.video.videoHeight;
+  return roi.points.map((p) => [Math.round(p.fx * w), Math.round(p.fy * h)]);
+}
+
+/* ------------------------------------------------------------------ */
 /* actions                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -427,6 +547,7 @@ $("submit-form").addEventListener("submit", async (e) => {
     video_url: $("video-url").value.trim(),
     target_fps: parseInt($("target-fps").value, 10) || 10,
     annotate: $("annotate").checked,
+    region: roiPayload(),
   };
 
   btn.disabled = true;
