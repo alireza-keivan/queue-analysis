@@ -12,7 +12,7 @@ import os
 import time
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -27,6 +27,10 @@ RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "")
 # Optional: n8n's webhook URL for the alert workflow. If unset, jobs simply
 # aren't announced to n8n - nothing else changes.
 N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "")
+# Optional: a Google Sheet published-to-web embed URL (File > Share > Publish
+# to web, embed tab) - shown as-is in the dashboard if set. This is the same
+# sheet n8n's workflow already logs job results into.
+GOOGLE_SHEET_EMBED_URL = os.environ.get("GOOGLE_SHEET_EMBED_URL", "")
 
 # A cold worker plus a full video can take minutes; the browser waits on this.
 RUNPOD_TIMEOUT = 900.0
@@ -42,6 +46,10 @@ class SubmitRequest(BaseModel):
     # editor. None means "use queue.yaml's default region" - never written to
     # any file, just passed through on this one job's request.
     region: list[list[float]] | None = None
+    # Detection confidence / NMS IOU thresholds. Same "None = queue.yaml
+    # default, otherwise a per-job override" pattern as region.
+    conf: float | None = None
+    iou: float | None = None
 
 
 @app.get("/api/health")
@@ -89,10 +97,22 @@ async def _storage(client: httpx.AsyncClient, method: str, path: str, **kwargs) 
     return response
 
 
+@app.get("/api/config")
+async def config():
+    """Static UI config the frontend can't get from anywhere else - not
+    secrets (those stay server-side), just "should this panel render"."""
+    return {"google_sheet_embed_url": GOOGLE_SHEET_EMBED_URL or None}
+
+
 @app.get("/api/jobs")
-async def list_jobs():
+async def list_jobs(
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+):
     async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await _storage(client, "GET", "/jobs")
+        r = await _storage(client, "GET", "/jobs", params={
+            k: v for k, v in {"since": since, "until": until}.items() if v is not None
+        })
         return r.json()
 
 
@@ -141,6 +161,8 @@ async def submit_job(req: SubmitRequest):
                         "target_fps": req.target_fps,
                         "annotate": req.annotate,
                         **({"region": req.region} if req.region else {}),
+                        **({"conf": req.conf} if req.conf is not None else {}),
+                        **({"iou": req.iou} if req.iou is not None else {}),
                     }
                 },
             )

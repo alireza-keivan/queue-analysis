@@ -58,17 +58,18 @@ def video_writer(capture, path, target_fps):
                 effective_fps, (w, h))
     return writer
 
-def model_creator(config, region=None):
-    # region overrides config["QUEUE_REGION"] when the caller (e.g. a
-    # per-job ROI picked in the dashboard) supplies one; falls back to the
-    # yaml default otherwise.
+def model_creator(config, region=None, conf=None, iou=None):
+    # region/conf/iou override queue.yaml's defaults when the caller (e.g. a
+    # per-job setting picked in the dashboard) supplies one; None means "use
+    # the yaml default" - checked explicitly (not `conf or config["CONF"]")
+    # since 0.0 is a legitimate threshold and falsy.
     queuemanager = solutions.QueueManager(
         show=False,  # display the output
         model=config["MODEL"],  # path to the YOLO26 model file
         region=region or config["QUEUE_REGION"],
         tracker=config["TRACKER"],
-        conf=config["CONF"],
-        iou=config["IOU"],
+        conf=conf if conf is not None else config["CONF"],
+        iou=iou if iou is not None else config["IOU"],
         classes=[0]
     )
     return queuemanager

@@ -302,16 +302,36 @@ async function loadHealth() {
   }
 }
 
+/** created_at from storage-api is "YYYY-MM-DD HH:MM:SS" (UTC, SQLite's
+ * CURRENT_TIMESTAMP format) - already exactly what's needed, just swap the
+ * separator for readability. */
+function formatJobDate(createdAt) {
+  if (!createdAt) return "unknown date";
+  return createdAt.replace(" ", " · ") + " UTC";
+}
+
 async function loadJobs() {
   const list = $("joblist");
+  const since = $("filter-since").value;
+  // <input type=date> gives "YYYY-MM-DD"; as an upper bound that would
+  // exclude every job from that day except exactly midnight (string
+  // comparison), so extend it to the end of the day.
+  const until = $("filter-until").value ? `${$("filter-until").value} 23:59:59` : "";
+  const params = new URLSearchParams();
+  if (since) params.set("since", since);
+  if (until) params.set("until", until);
+  const qs = params.toString() ? `?${params}` : "";
+
   try {
-    state.jobs = await api("/api/jobs");
+    state.jobs = await api(`/api/jobs${qs}`);
   } catch (err) {
     list.innerHTML = `<li class="none">Could not reach storage-api.</li>`;
     return;
   }
   if (!state.jobs.length) {
-    list.innerHTML = `<li class="none">No jobs yet. Submit a video to get started.</li>`;
+    list.innerHTML = since || until
+      ? `<li class="none">No jobs in that date range.</li>`
+      : `<li class="none">No jobs yet. Submit a video to get started.</li>`;
     return;
   }
   list.innerHTML = "";
@@ -321,12 +341,31 @@ async function loadJobs() {
     btn.className = job.job_id === state.selected ? "active" : "";
     btn.innerHTML =
       `<span class="job-id">${job.job_id}</span>` +
+      `<span class="job-date">${formatJobDate(job.created_at)}</span>` +
       `<span class="job-meta">peak ${job.peak_queue} · ${job.track_count} tracks · ` +
       `${fmt(job.duration_seconds, 0)}s</span>`;
     btn.onclick = () => selectJob(job.job_id);
     li.appendChild(btn);
     list.appendChild(li);
   }
+}
+
+$("filter-since").addEventListener("change", loadJobs);
+$("filter-until").addEventListener("change", loadJobs);
+$("filter-clear-btn").addEventListener("click", () => {
+  $("filter-since").value = "";
+  $("filter-until").value = "";
+  loadJobs();
+});
+
+async function loadConfig() {
+  try {
+    const cfg = await api("/api/config");
+    if (cfg.google_sheet_embed_url) {
+      $("sheet-frame").src = cfg.google_sheet_embed_url;
+      $("sheet-card").hidden = false;
+    }
+  } catch (_) { /* no config endpoint reachable yet - just skip the panel */ }
 }
 
 function renderTiles(job, snapshots, tracks) {
@@ -543,11 +582,15 @@ $("submit-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = $("submit-btn");
   const hint = $("submit-hint");
+  const confVal = $("conf-input").value.trim();
+  const iouVal = $("iou-input").value.trim();
   const payload = {
     video_url: $("video-url").value.trim(),
     target_fps: parseInt($("target-fps").value, 10) || 10,
     annotate: $("annotate").checked,
     region: roiPayload(),
+    conf: confVal ? parseFloat(confVal) : null,
+    iou: iouVal ? parseFloat(iouVal) : null,
   };
 
   btn.disabled = true;
@@ -597,4 +640,5 @@ $("refresh-btn").addEventListener("click", () => { loadJobs(); loadHealth(); });
 
 loadHealth();
 loadJobs();
+loadConfig();
 setInterval(loadHealth, 30000);

@@ -11,7 +11,10 @@ CREATE TABLE IF NOT EXISTS snapshots (
     timestamp REAL NOT NULL,
     queue_count INTEGER NOT NULL,
     inside_ids TEXT NOT NULL DEFAULT '[]',   -- JSON array of track_ids; SQLite has no array type
-    outside_ids TEXT NOT NULL DEFAULT '[]'
+    outside_ids TEXT NOT NULL DEFAULT '[]',
+    -- Wall-clock insert time (UTC), NOT video-relative like `timestamp` above -
+    -- this is "when was this job's data saved", used as the job's displayed date.
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_job_id ON snapshots (job_id);
 
@@ -30,20 +33,37 @@ CREATE INDEX IF NOT EXISTS idx_tracks_job_id ON tracks (job_id);
 # reconcile columns - so a DB file created before one of these existed keeps
 # the old shape forever, and every query naming the new column dies with
 # "no such column". Each entry is applied only if the column is missing.
+#
+# `backfill`, when set, is a second statement run once right after the ALTER.
+# This is required, not optional, for any default that isn't a plain
+# constant (e.g. CURRENT_TIMESTAMP): SQLite's ALTER TABLE ADD COLUMN accepts
+# a non-constant default only on a table with zero rows (nothing to
+# backfill) - on any table that already has data, e.g. this project's real
+# storage.db, it raises "Cannot add a column with non-constant default".
+# A plain constant default sidesteps that restriction; the follow-up UPDATE
+# (an ordinary statement, not a column default, so the restriction doesn't
+# apply) does the actual backfill.
 MIGRATIONS = (
-    ("snapshots", "inside_ids", "TEXT NOT NULL DEFAULT '[]'"),
-    ("snapshots", "outside_ids", "TEXT NOT NULL DEFAULT '[]'"),
+    ("snapshots", "inside_ids", "TEXT NOT NULL DEFAULT '[]'", None),
+    ("snapshots", "outside_ids", "TEXT NOT NULL DEFAULT '[]'", None),
+    # Pre-existing rows get the migration's own run time, not their real
+    # insert time (SQLite has no way to recover that) - an honest
+    # approximation, not a fabricated backfill.
+    (
+        "snapshots", "created_at", "TEXT NOT NULL DEFAULT ''",
+        "UPDATE snapshots SET created_at = CURRENT_TIMESTAMP WHERE created_at = ''",
+    ),
 )
 
 
 async def _apply_migrations(db: aiosqlite.Connection) -> None:
-    for table, column, decl in MIGRATIONS:
+    for table, column, decl, backfill in MIGRATIONS:
         cursor = await db.execute(f"PRAGMA table_info({table})")
         existing = {row[1] for row in await cursor.fetchall()}
         if column not in existing:
-            # A NOT NULL column can only be added when it carries a default,
-            # which is what backfills the pre-existing rows.
             await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            if backfill:
+                await db.execute(backfill)
 
 
 async def connect() -> aiosqlite.Connection:

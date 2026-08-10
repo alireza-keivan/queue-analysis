@@ -68,6 +68,10 @@ def handler(event):
     # the dashboard's browser-side ROI editor. Falls back to queue.yaml's
     # QUEUE_REGION when not supplied - see app/queue_management.py:model_creator.
     region = job_input.get("region")
+    # Detection confidence / NMS IOU thresholds - same override-or-fall-back
+    # pattern as region, exposed in the dashboard's advanced settings panel.
+    conf = job_input.get("conf")
+    iou = job_input.get("iou")
 
     input_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     output_tmp = tempfile.NamedTemporaryFile(suffix=".avi", delete=False)
@@ -92,7 +96,7 @@ def handler(event):
         # ID counter, persist=True tracking) leaked across unrelated videos
         # when this was created once at cold start.
         a = time.perf_counter()
-        queue_manager = model_creator(config, region=region)
+        queue_manager = model_creator(config, region=region, conf=conf, iou=iou)
         t_model_load = time.perf_counter() - a
 
         if diagnostic:

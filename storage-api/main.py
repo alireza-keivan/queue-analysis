@@ -41,14 +41,30 @@ def get_db(request: Request):
     return request.app.state.db
 
 
-async def _fetch_job_summaries(db, job_id: str | None = None) -> list[JobSummary]:
-    where = "WHERE job_id = ?" if job_id is not None else ""
-    params = (job_id,) if job_id is not None else ()
+async def _fetch_job_summaries(
+    db, job_id: str | None = None,
+    since: str | None = None, until: str | None = None,
+) -> list[JobSummary]:
+    # job_id is an exact match; since/until filter on created_at (inclusive)
+    # and only ever come from list_jobs, never combined with job_id in
+    # practice, but there's no reason to forbid it.
+    clauses, params = [], []
+    if job_id is not None:
+        clauses.append("job_id = ?")
+        params.append(job_id)
+    if since is not None:
+        clauses.append("created_at >= ?")
+        params.append(since)
+    if until is not None:
+        clauses.append("created_at <= ?")
+        params.append(until)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params = tuple(params)
 
     cursor = await db.execute(
         f"""
         SELECT job_id, COUNT(*), MAX(queue_count), AVG(queue_count),
-               MAX(timestamp), MIN(id)
+               MAX(timestamp), MIN(id), MIN(created_at)
         FROM snapshots
         {where}
         GROUP BY job_id
@@ -58,19 +74,24 @@ async def _fetch_job_summaries(db, job_id: str | None = None) -> list[JobSummary
     )
     snapshot_rows = await cursor.fetchall()
 
+    # Tracks carry no created_at of their own - they belong to the same job_id
+    # as the snapshots already matched above, so re-filtering by date here
+    # would just be filtering on a value that isn't in this table.
+    track_where = "WHERE job_id = ?" if job_id is not None else ""
+    track_params = (job_id,) if job_id is not None else ()
     cursor = await db.execute(
         f"""
         SELECT job_id, COUNT(*), AVG(dwell_seconds), MAX(dwell_seconds)
         FROM tracks
-        {where}
+        {track_where}
         GROUP BY job_id
         """,
-        params,
+        track_params,
     )
     track_stats = {r[0]: (r[1], r[2], r[3]) for r in await cursor.fetchall()}
 
     jobs = []
-    for jid, snap_count, peak, avg_q, duration, _ in snapshot_rows:
+    for jid, snap_count, peak, avg_q, duration, _, created_at in snapshot_rows:
         count, avg_dwell, max_dwell = track_stats.get(jid, (0, 0.0, 0.0))
         jobs.append(
             JobSummary(
@@ -82,15 +103,22 @@ async def _fetch_job_summaries(db, job_id: str | None = None) -> list[JobSummary
                 duration_seconds=duration or 0.0,
                 avg_dwell=avg_dwell or 0.0,
                 max_dwell=max_dwell or 0.0,
+                created_at=created_at,
             )
         )
     return jobs
 
 
 @app.get("/jobs", response_model=list[JobSummary])
-async def list_jobs(db=Depends(get_db)):
-    """One row per processing run, newest first."""
-    return await _fetch_job_summaries(db)
+async def list_jobs(
+    since: str | None = Query(default=None, description="ISO date/datetime, inclusive lower bound on created_at"),
+    until: str | None = Query(default=None, description="ISO date/datetime, inclusive upper bound on created_at"),
+    db=Depends(get_db),
+):
+    """One row per processing run, newest first. since/until filter by the
+    job's created_at (string comparison - both are 'YYYY-MM-DD[ HH:MM:SS]',
+    which sorts correctly as text)."""
+    return await _fetch_job_summaries(db, since=since, until=until)
 
 
 @app.get("/jobs/{job_id}", response_model=JobSummary)

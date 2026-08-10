@@ -56,6 +56,22 @@
               <span>Annotate</span>
             </label>
           </div>
+
+          <details class="advanced">
+            <summary>Advanced settings</summary>
+            <p class="roi-status">Leave blank to use queue.yaml's defaults.</p>
+            <div class="form-row">
+              <label>
+                <span>Confidence (conf)</span>
+                <input type="number" id="conf-input" min="0" max="1" step="0.01" placeholder="0.35">
+              </label>
+              <label>
+                <span>IOU</span>
+                <input type="number" id="iou-input" min="0" max="1" step="0.01" placeholder="0.70">
+              </label>
+            </div>
+          </details>
+
           <button type="submit" id="submit-btn">Run analysis</button>
           <p class="hint" id="submit-hint">
             Processing runs on a GPU worker and can take a few minutes.
@@ -68,11 +84,24 @@
           <h2>Jobs</h2>
           <button class="ghost" id="refresh-btn" title="Refresh">↻</button>
         </div>
+        <div class="date-filter">
+          <input type="date" id="filter-since" title="From date">
+          <span class="date-filter-sep">–</span>
+          <input type="date" id="filter-until" title="To date">
+          <button type="button" class="ghost" id="filter-clear-btn" title="Clear date filter">✕</button>
+        </div>
         <ul class="joblist" id="joblist"></ul>
       </section>
     </aside>
 
     <main class="main" id="main">
+      <section class="card sheet-card" id="sheet-card" hidden>
+        <div class="card-head">
+          <h3>Job log (Google Sheet)</h3>
+        </div>
+        <iframe id="sheet-frame" class="sheet-frame" loading="lazy" title="Job log Google Sheet"></iframe>
+      </section>
+
       <div class="empty" id="empty-state">
         <div class="empty-art"></div>
         <h2>No job selected</h2>

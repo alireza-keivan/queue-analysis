@@ -23,6 +23,7 @@ services:
       # Set this once you have n8n's webhook Production URL, e.g.
       # http://n8n:5678/webhook/<id> - service name, not localhost.
       - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-}
+      - GOOGLE_SHEET_EMBED_URL=${GOOGLE_SHEET_EMBED_URL:-}
     depends_on:
       - storage-api
 

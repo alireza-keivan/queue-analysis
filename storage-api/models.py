@@ -34,3 +34,5 @@ class JobSummary(BaseModel):
     duration_seconds: float
     avg_dwell: float
     max_dwell: float
+    # Wall-clock insert time (UTC, "YYYY-MM-DD HH:MM:SS"), not video-relative.
+    created_at: str
