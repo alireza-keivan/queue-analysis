@@ -25,6 +25,27 @@ CREATE INDEX IF NOT EXISTS idx_tracks_job_id ON tracks (job_id);
 """
 
 
+# Columns added to a table after it first shipped. CREATE TABLE IF NOT
+# EXISTS does nothing at all when the table is already there - it does not
+# reconcile columns - so a DB file created before one of these existed keeps
+# the old shape forever, and every query naming the new column dies with
+# "no such column". Each entry is applied only if the column is missing.
+MIGRATIONS = (
+    ("snapshots", "inside_ids", "TEXT NOT NULL DEFAULT '[]'"),
+    ("snapshots", "outside_ids", "TEXT NOT NULL DEFAULT '[]'"),
+)
+
+
+async def _apply_migrations(db: aiosqlite.Connection) -> None:
+    for table, column, decl in MIGRATIONS:
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in await cursor.fetchall()}
+        if column not in existing:
+            # A NOT NULL column can only be added when it carries a default,
+            # which is what backfills the pre-existing rows.
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 async def connect() -> aiosqlite.Connection:
     # sqlite3 (and aiosqlite, which wraps it) will not create a missing
     # parent directory - it only creates the .db file itself.
@@ -36,5 +57,8 @@ async def connect() -> aiosqlite.Connection:
     await db.execute("PRAGMA journal_mode=WAL;")
     await db.execute("PRAGMA busy_timeout=5000;")
     await db.executescript(SCHEMA)
+    # Runs after the schema script, so the table is guaranteed to exist -
+    # this only ever adds columns to an already-created older table.
+    await _apply_migrations(db)
     await db.commit()
     return db

@@ -60,25 +60,47 @@ async def health():
     }
 
 
+async def _storage(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> httpx.Response:
+    """Call storage-api and turn either failure mode into a legible 502.
+
+    Both modes previously reached the browser as a bare "500 Internal Server
+    Error" with no detail: an unreachable storage-api raised httpx.ConnectError,
+    and an error *response* raised via raise_for_status - in both cases the
+    real cause (`no such column: inside_ids`, or "the service isn't running")
+    was visible only in a server log the user never sees.
+    """
+    try:
+        response = await client.request(method, f"{STORAGE_API_URL}{path}",
+                                        headers=STORAGE_HEADERS, **kwargs)
+    except httpx.HTTPError as exc:
+        logging.error(f"storage-api unreachable for {method} {path}: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"storage-api is unreachable at {STORAGE_API_URL} - is the service running?",
+        )
+
+    if not response.is_success:
+        body = response.text[:300]
+        logging.error(f"storage-api {method} {path} failed: {response.status_code} {body}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"storage-api {method} {path} failed ({response.status_code}): {body}",
+        )
+    return response
+
+
 @app.get("/api/jobs")
 async def list_jobs():
     async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"{STORAGE_API_URL}/jobs", headers=STORAGE_HEADERS)
-        r.raise_for_status()
+        r = await _storage(client, "GET", "/jobs")
         return r.json()
 
 
 @app.get("/api/jobs/{job_id}")
 async def job_detail(job_id: str):
     async with httpx.AsyncClient(timeout=30.0) as client:
-        snapshots = await client.get(
-            f"{STORAGE_API_URL}/snapshots", params={"job_id": job_id}, headers=STORAGE_HEADERS
-        )
-        tracks = await client.get(
-            f"{STORAGE_API_URL}/tracks", params={"job_id": job_id}, headers=STORAGE_HEADERS
-        )
-        snapshots.raise_for_status()
-        tracks.raise_for_status()
+        snapshots = await _storage(client, "GET", "/snapshots", params={"job_id": job_id})
+        tracks = await _storage(client, "GET", "/tracks", params={"job_id": job_id})
     return {
         "job_id": job_id,
         "snapshots": snapshots.json(),
@@ -89,8 +111,7 @@ async def job_detail(job_id: str):
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str):
     async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.delete(f"{STORAGE_API_URL}/jobs/{job_id}", headers=STORAGE_HEADERS)
-        r.raise_for_status()
+        r = await _storage(client, "DELETE", f"/jobs/{job_id}")
         return r.json()
 
 
@@ -168,20 +189,31 @@ async def submit_job(req: SubmitRequest):
         logging.error(f"Handler error: {result['error']}")
         raise HTTPException(status_code=400, detail=f"Handler error: {result['error']}")
 
-    # Relay into storage-api. Done after processing succeeded, so a storage
-    # failure here doesn't hide a successful (already paid for) GPU run.
-    # Bulk endpoints: one round trip and one commit per table instead of one
-    # of each per row (a few hundred snapshots per job otherwise means a few
-    # hundred HTTP calls and SQLite commits).
+    # Relay into storage-api. Bulk endpoints: one round trip and one commit
+    # per table instead of one of each per row (a few hundred snapshots per
+    # job otherwise means a few hundred HTTP calls and SQLite commits).
+    #
+    # The GPU run is already finished and already paid for by this point, so
+    # a storage failure must say so explicitly rather than surfacing as a
+    # bare 500 that looks like the whole job failed - the expensive half
+    # succeeded and only persistence was lost.
     snapshots = result.get("snapshots", [])
     tracks = result.get("tracks", [])
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        if snapshots:
-            r = await client.post(f"{STORAGE_API_URL}/snapshots/bulk", json=snapshots, headers=STORAGE_HEADERS)
-            r.raise_for_status()
-        if tracks:
-            r = await client.post(f"{STORAGE_API_URL}/tracks/bulk", json=tracks, headers=STORAGE_HEADERS)
-            r.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            if snapshots:
+                await _storage(client, "POST", "/snapshots/bulk", json=snapshots)
+            if tracks:
+                await _storage(client, "POST", "/tracks/bulk", json=tracks)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"GPU job {result.get('job_id')} COMPLETED "
+                f"({len(snapshots)} snapshots, {len(tracks)} tracks) but the results "
+                f"could not be saved: {exc.detail}"
+            ),
+        )
 
     # Ping n8n so its alert workflow can react. Best-effort: n8n fetches its
     # own data from storage-api once triggered, so this carries no payload
