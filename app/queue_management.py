@@ -43,20 +43,55 @@ def frame_stride(capture, target_fps):
     stride = max(1, round(src_fps / target_fps))
     return stride, src_fps / stride
 
-def video_writer(capture, path, target_fps):
-    # Create a VideoWriter object
-    w, h = (int(capture.get(x))
-                    for x in (
-                    cv2.CAP_PROP_FRAME_WIDTH,
-                    cv2.CAP_PROP_FRAME_HEIGHT))
+# Annotated output is a human-viewable artifact, not analysis input - the
+# metrics are computed from full-resolution frames regardless. Writing it at
+# source resolution was measured at 20.1 ms/frame (8.6s per 426-frame job) and
+# produced a 54.7MB file - larger than the 39.7MB h264 source despite holding
+# 6x fewer frames, because mp4v (MPEG-4 Part 2) is a weak codec. Capping the
+# long edge cuts pixels ~4x, which cuts both encode time and upload size.
+ANNOTATED_MAX_WIDTH = 960
+
+
+def annotated_frame_size(capture, max_width=ANNOTATED_MAX_WIDTH):
+    """(width, height) for the annotated output, preserving aspect ratio.
+
+    Returns the source size unchanged when it is already within max_width, so
+    small inputs are never upscaled.
+    """
+    w = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if max_width and w > max_width:
+        scale = max_width / w
+        # Even dimensions: some encoders reject odd width/height outright.
+        w, h = int(w * scale) // 2 * 2, int(h * scale) // 2 * 2
+    return w, h
+
+
+def video_writer(capture, path, target_fps, max_width=ANNOTATED_MAX_WIDTH):
+    """VideoWriter for the annotated output, downscaled and H.264 if available.
+
+    Tries H.264 first (far smaller files, and actually playable in a browser -
+    mp4v in .avi is not), falling back to mp4v when the OpenCV build has no
+    H.264 encoder. isOpened() is the only reliable way to detect that: OpenCV
+    reports a missing codec by returning a writer that silently discards every
+    frame rather than by raising.
+    """
+    size = annotated_frame_size(capture, max_width)
 
     # Must be the processed rate, not the source rate, or playback runs fast.
     _, effective_fps = frame_stride(capture, target_fps)
 
-    writer = cv2.VideoWriter(path,
-                cv2.VideoWriter_fourcc(*"mp4v"),
-                effective_fps, (w, h))
-    return writer
+    for fourcc in ("avc1", "mp4v"):
+        writer = cv2.VideoWriter(
+            path, cv2.VideoWriter_fourcc(*fourcc), effective_fps, size
+        )
+        if writer.isOpened():
+            logging.info(f"Annotated output: {fourcc} {size[0]}x{size[1]} @ {effective_fps:.2f}fps")
+            return writer
+        writer.release()
+
+    logging.error("Could not open a VideoWriter with any known codec.")
+    return None
 
 def model_creator(config, region=None, conf=None, iou=None):
     # region/conf/iou override queue.yaml's defaults when the caller (e.g. a
@@ -74,7 +109,12 @@ def model_creator(config, region=None, conf=None, iou=None):
     )
     return queuemanager
 
-def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=True):
+def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=False):
+    # annotate defaults to False: rendering + encoding + uploading the output
+    # video was measured at +9.5s on an 11.2s job (+85%), and it is a
+    # human-viewing convenience, never an input to the metrics. Callers that
+    # actually want it opt in explicitly.
+    #
     # Process video
     region = np.array(queue_manager.region, dtype=np.int32)  # built once, reused every frame
     src_fps = cap.get(cv2.CAP_PROP_FPS) or float(target_fps)
@@ -86,6 +126,10 @@ def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=
 
     src_idx = 0     # position in the source video (drives real video time)
     frame_idx = 0   # frames actually run through the model
+
+    # Size the writer was opened with; frames are resized to match before
+    # writing. Only meaningful when annotating.
+    write_size = annotated_frame_size(cap) if annotate else None
 
     open_tracks = {}       # track_id -> entry_time (video-relative seconds)
     completed_tracks = []  # [{job_id, track_id, dwell_seconds}, ...]
@@ -176,8 +220,14 @@ def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=
         t_log += time.perf_counter() - a
 
         a = time.perf_counter()
-        if annotate:
-            writer.write(results.plot_im)  # write the processed frame.
+        if annotate and writer is not None:
+            frame_out = results.plot_im
+            # The writer may be downscaled relative to the source (see
+            # video_writer) - VideoWriter silently drops frames whose size
+            # doesn't match the size it was opened with, so resize to match.
+            if (frame_out.shape[1], frame_out.shape[0]) != write_size:
+                frame_out = cv2.resize(frame_out, write_size, interpolation=cv2.INTER_AREA)
+            writer.write(frame_out)  # write the processed frame.
         t_write += time.perf_counter() - a
         frame_idx += 1
 
@@ -194,22 +244,29 @@ def video_processor(cap, queue_manager, writer, job_id, target_fps=10, annotate=
             "dwell_seconds": final_time - entry_time,
         })
 
-    _log_profile(job_id, frame_idx, src_idx, src_fps, effective_fps, t_loop,
-                 t_decode, t_track, t_roi, t_write, t_log,
-                 ms_pre, ms_inf, ms_post,
-                 unique_ids, peak_concurrent, completed_tracks)
+    profile = _log_profile(job_id, frame_idx, src_idx, src_fps, effective_fps, t_loop,
+                           t_decode, t_track, t_roi, t_write, t_log,
+                           ms_pre, ms_inf, ms_post,
+                           unique_ids, peak_concurrent, completed_tracks)
 
-    return snapshots, completed_tracks
+    return snapshots, completed_tracks, profile
 
 
 def _log_profile(job_id, frames, src_frames, src_fps, effective_fps, t_loop,
                  t_decode, t_track, t_roi, t_write, t_log,
                  ms_pre, ms_inf, ms_post, unique_ids, peak_concurrent,
                  completed_tracks):
-    """One screenshot-friendly block of cost + tracking-quality numbers."""
+    """Log a screenshot-friendly cost + tracking-quality block, and return the
+    same numbers as a dict.
+
+    Returning them matters: logging alone puts these numbers only in RunPod's
+    log console, invisible to any API caller - measuring where a job's time
+    actually goes then requires black-box A/B timing of whole jobs instead of
+    just reading the answer off one response.
+    """
     if frames == 0:
         logging.info("PROFILE: no frames processed")
-        return
+        return {"frames_processed": 0}
 
     def per_frame(total_seconds):
         return total_seconds / frames * 1000.0
@@ -259,20 +316,52 @@ def _log_profile(job_id, frames, src_frames, src_fps, effective_fps, t_loop,
     for line in lines:
         logging.info(line)
 
-def queue_management():
+    return {
+        "frames_processed": frames,
+        "source_frames": src_frames,
+        "video_seconds": round(video_seconds, 2),
+        "loop_seconds": round(t_loop, 2),
+        "realtime_factor": round(video_seconds / t_loop, 2) if t_loop else 0.0,
+        "ms_per_frame": {
+            "total": round(per_frame(t_loop), 2),
+            "decode": round(per_frame(t_decode), 2),
+            "track_and_solution": round(per_frame(t_track), 2),
+            "preprocess": round(ms_pre / frames, 2),
+            "inference": round(ms_inf / frames, 2),
+            "postprocess": round(ms_post / frames, 2),
+            "tracker_etc": round(per_frame(t_track) - (ms_pre + ms_inf + ms_post) / frames, 2),
+            "roi_check": round(per_frame(t_roi), 2),
+            "annotate_write": round(per_frame(t_write), 2),
+            "logging": round(per_frame(t_log), 2),
+        },
+        "tracking_quality": {
+            "unique_ids_in_roi": len(unique_ids),
+            "peak_concurrent_in_roi": peak_concurrent,
+            "completed_dwells": len(dwells),
+            "sub_1s_dwells": len(short),
+            "median_dwell": round(statistics.median(dwells), 2) if dwells else 0.0,
+            "max_dwell": round(max(dwells), 2) if dwells else 0.0,
+        },
+    }
+
+def queue_management(annotate=False):
+    """Local/standalone entry point. annotate defaults to False for the same
+    reason it does in video_processor - opt in when you actually want the
+    rendered video."""
     config = load_config()
     target_fps = config.get("TARGET_FPS", 10)
     cap = cap_check(config["CAP"])
-    writer = video_writer(cap, config["VIDEO_WRITER"], target_fps)
+    writer = video_writer(cap, config["VIDEO_WRITER"], target_fps) if annotate else None
     queue_manager = model_creator(config)
     job_id = str(uuid.uuid4())
-    snapshots, completed_tracks = video_processor(
-        cap, queue_manager, writer, job_id, target_fps=target_fps
+    snapshots, completed_tracks, _profile = video_processor(
+        cap, queue_manager, writer, job_id, target_fps=target_fps, annotate=annotate
     )
     logging.info("Queue management processing complete.")
 
     release_cap(cap)
-    writer.release()
+    if writer is not None:
+        writer.release()
     return snapshots, completed_tracks
 
 if __name__ == "__main__":

@@ -41,7 +41,10 @@ app = FastAPI(title="queue-analysis dashboard")
 class SubmitRequest(BaseModel):
     video_url: str
     target_fps: int = 10
-    annotate: bool = True
+    # False by default - rendering/encoding/uploading the annotated video was
+    # measured at +85% job time for output the metrics never use. The UI
+    # checkbox is unchecked to match; tick it when you want the video.
+    annotate: bool = False
     # [[x, y], ...] in source-video pixel coords, picked in the browser ROI
     # editor. None means "use queue.yaml's default region" - never written to
     # any file, just passed through on this one job's request.
@@ -253,6 +256,11 @@ async def submit_job(req: SubmitRequest):
         "snapshot_count": len(result.get("snapshots", [])),
         "track_count": len(result.get("tracks", [])),
         "annotated_video_url": result.get("annotated_video_url"),
+        # Per-stage timings straight from the GPU worker. Passed through so
+        # the cost of a job is inspectable from the browser/API instead of
+        # only from RunPod's log console.
+        "cost": result.get("cost"),
+        "profile": result.get("profile"),
     }
 
 

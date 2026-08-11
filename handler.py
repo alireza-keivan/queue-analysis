@@ -25,7 +25,7 @@ BUCKET_REGION = "us-east-005"
 config = load_config()
 
 
-def upload_annotated_video(file_path):
+def upload_annotated_video(file_path, job_id):
     # rp_upload's own upload helper can't determine Backblaze's region from
     # this endpoint format and silently signs requests with the wrong region,
     # causing SignatureDoesNotMatch. Building the client directly with the
@@ -44,7 +44,10 @@ def upload_annotated_video(file_path):
             response_checksum_validation="when_required",
         ),
     )
-    key = "queue-analysis-outputs/annotated.avi"
+    # Keyed per job. A single fixed key meant every job silently overwrote the
+    # previous one's video, so an older job's presigned URL quietly started
+    # serving the newest job's output instead of its own.
+    key = f"queue-analysis-outputs/{job_id}.mp4"
     client.upload_file(file_path, BUCKET_NAME, key)
     return client.generate_presigned_url(
         "get_object",
@@ -62,7 +65,9 @@ def handler(event):
     # Per-request overrides; fall back to queue.yaml. Turning annotate off
     # skips rendering, encoding and uploading the output video entirely.
     target_fps = job_input.get("target_fps", config.get("TARGET_FPS", 10))
-    annotate = job_input.get("annotate", True)
+    # Defaults to False: measured at +9.5s on an 11.2s job (+85%) for output
+    # nothing downstream reads. Callers that want the video ask for it.
+    annotate = job_input.get("annotate", False)
     diagnostic = job_input.get("diagnostic", False)
     # [[x, y], ...] in the source video's native pixel coordinates, picked in
     # the dashboard's browser-side ROI editor. Falls back to queue.yaml's
@@ -74,7 +79,12 @@ def handler(event):
     iou = job_input.get("iou")
 
     input_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-    output_tmp = tempfile.NamedTemporaryFile(suffix=".avi", delete=False)
+    # .mp4, not .avi: the writer now prefers H.264, and .avi is not playable
+    # in a browser regardless of codec - this file is handed to a client.
+    output_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    # Only the path is ever used (by VideoWriter/boto3), so close the handle
+    # now rather than leaking a file descriptor per job on a long-lived worker.
+    output_tmp.close()
     cap = None
     writer = None
     t_job_start = time.perf_counter()
@@ -124,9 +134,12 @@ def handler(event):
                 ],
             }
 
-        writer = video_writer(cap, output_tmp.name, target_fps)
+        # Only built when actually annotating - constructing it regardless
+        # allocated an encoder and created an output file for every job,
+        # including the ones that never write a single frame to it.
+        writer = video_writer(cap, output_tmp.name, target_fps) if annotate else None
         a = time.perf_counter()
-        snapshots, tracks = video_processor(
+        snapshots, tracks, profile = video_processor(
             cap, queue_manager, writer, job_id,
             target_fps=target_fps, annotate=annotate,
         )
@@ -136,12 +149,13 @@ def handler(event):
         # so the file on disk isn't complete until this happens.
         release_cap(cap)
         cap = None
-        writer.release()
-        writer = None
+        if writer is not None:
+            writer.release()
+            writer = None
         output_mb = os.path.getsize(output_tmp.name) / 1e6
 
         a = time.perf_counter()
-        annotated_video_url = upload_annotated_video(output_tmp.name) if annotate else None
+        annotated_video_url = upload_annotated_video(output_tmp.name, job_id) if annotate else None
         t_upload = time.perf_counter() - a
 
         t_total = time.perf_counter() - t_job_start
@@ -166,6 +180,21 @@ def handler(event):
             "snapshots": snapshots,
             "tracks": tracks,
             "annotated_video_url": annotated_video_url,
+            # Returned, not just logged: these numbers are otherwise visible
+            # only in RunPod's log console, so no API caller (or dashboard)
+            # can see where a job's time actually went.
+            "cost": {
+                "download_s": round(t_download, 2),
+                "model_load_s": round(t_model_load, 2),
+                "processing_s": round(t_process, 2),
+                "upload_s": round(t_upload, 2),
+                "total_s": round(t_total, 2),
+                "input_mb": round(input_mb, 1),
+                "output_mb": round(output_mb, 1),
+                "annotated": annotate,
+                "overhead_pct": round((t_total - t_process) / t_total * 100, 1) if t_total else 0.0,
+            },
+            "profile": profile,
         }
     finally:
         if cap is not None:
