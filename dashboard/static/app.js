@@ -339,8 +339,9 @@ async function loadJobs() {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.className = job.job_id === state.selected ? "active" : "";
+    btn.title = job.job_id; // real id still reachable on hover, for debugging
     btn.innerHTML =
-      `<span class="job-id">${job.job_id}</span>` +
+      `<span class="job-id">Job #${job.seq}</span>` +
       `<span class="job-date">${formatJobDate(job.created_at)}</span>` +
       `<span class="job-meta">peak ${job.peak_queue} · ${job.track_count} tracks · ` +
       `${fmt(job.duration_seconds, 0)}s</span>`;
@@ -357,6 +358,13 @@ $("filter-clear-btn").addEventListener("click", () => {
   $("filter-until").value = "";
   loadJobs();
 });
+
+// Open the native calendar on click instead of leaving it to a tiny icon -
+// showPicker() is the same UI the icon triggers, just reachable from
+// anywhere in the field so clients don't have to type a date by hand.
+for (const input of [$("filter-since"), $("filter-until")]) {
+  input.addEventListener("click", () => input.showPicker?.());
+}
 
 async function loadConfig() {
   try {
@@ -418,12 +426,15 @@ async function selectJob(jobId) {
   state.selected = jobId;
   $("empty-state").hidden = true;
   $("detail").hidden = false;
-  $("detail-jobid").textContent = jobId;
+  const known = state.jobs.find((j) => j.job_id === jobId);
+  $("detail-jobid").textContent = known ? `Job #${known.seq}` : jobId;
+  $("detail-jobid").title = jobId;
   $("detail-title").textContent = "Run detail";
 
   const link = $("video-link");
   if (state.videoUrls[jobId]) {
     link.href = state.videoUrls[jobId];
+    link.download = `queue-analysis-job-${known ? known.seq : jobId}.avi`;
     link.hidden = false;
   } else {
     link.hidden = true;
@@ -465,14 +476,21 @@ async function selectJob(jobId) {
 
 const roi = { points: [], video: null, canvas: null, ctx: null };
 
+// Canvas fillStyle/strokeStyle can't take a CSS var() directly - resolved
+// once here so the ROI overlay stays in sync with the actual theme colors
+// instead of a hardcoded value that used to match the old dark-mode accent.
+const rootStyle = getComputedStyle(document.documentElement);
+const ROI_STROKE = rootStyle.getPropertyValue("--accent").trim() || "#0e9f8e";
+const ROI_FILL = rootStyle.getPropertyValue("--accent-soft").trim() || "rgba(14, 159, 142, 0.18)";
+
 function roiRedraw() {
   const { ctx, canvas, points } = roi;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!points.length) return;
 
   ctx.lineWidth = 2;
-  ctx.strokeStyle = "#2ad3bb";
-  ctx.fillStyle = "rgba(42, 211, 187, 0.22)";
+  ctx.strokeStyle = ROI_STROKE;
+  ctx.fillStyle = ROI_FILL;
 
   ctx.beginPath();
   points.forEach((p, i) => {
@@ -487,21 +505,22 @@ function roiRedraw() {
     const x = p.fx * canvas.width, y = p.fy * canvas.height;
     ctx.beginPath();
     ctx.arc(x, y, 4, 0, Math.PI * 2);
-    ctx.fillStyle = "#2ad3bb";
+    ctx.fillStyle = ROI_STROKE;
     ctx.fill();
   });
 }
 
 function roiUpdateStatus() {
-  const status = $("roi-status");
   const n = roi.points.length;
-  if (!roi.video) {
-    status.textContent = "Using the default ROI from queue.yaml.";
-  } else if (n < 3) {
-    status.textContent = `Click at least 3 points to draw the queue area (${n} so far).`;
-  } else {
-    status.textContent = `Custom ROI set - ${n} points. This job will use it instead of queue.yaml's default.`;
-  }
+  const text = !roi.video
+    ? "Using the default ROI from queue.yaml."
+    : n < 3
+    ? `Click at least 3 points to draw the queue area (${n} so far).`
+    : `Custom ROI set - ${n} points. This job will use it instead of queue.yaml's default.`;
+  // Two places show this: the full status inside the modal while editing,
+  // and a one-line summary in the sidebar so it's visible with the modal closed.
+  $("roi-status").textContent = text;
+  $("roi-summary").textContent = text;
 }
 
 function roiSizeCanvas() {
@@ -511,35 +530,58 @@ function roiSizeCanvas() {
   roiRedraw();
 }
 
-$("roi-preview-btn").addEventListener("click", () => {
+// Persistent listeners, set up once - these used to be added inside the
+// "Preview & set ROI" click handler, which re-added a new one on every click
+// without removing the last (harmless here since roiSizeCanvas is
+// idempotent, but wasteful and worth not repeating now that the modal makes
+// re-opening more frequent).
+{
+  const video = $("roi-video");
+  roi.canvas = $("roi-canvas");
+  roi.ctx = roi.canvas.getContext("2d");
+  video.addEventListener("seeked", roiSizeCanvas);
+  window.addEventListener("resize", () => { if (roi.video && !$("roi-modal").hidden) roiSizeCanvas(); });
+}
+
+function openRoiModal() {
   const url = $("video-url").value.trim();
   if (!url) { toast("Enter a video URL first.", true); return; }
 
   const video = $("roi-video");
-  const canvas = $("roi-canvas");
+  const isNewVideo = video.dataset.loadedUrl !== url;
   roi.video = video;
-  roi.canvas = canvas;
-  roi.ctx = canvas.getContext("2d");
-  roi.points = [];
 
-  video.src = url;
-  $("roi-stage").hidden = false;
-  $("roi-undo-btn").hidden = false;
-  $("roi-clear-btn").hidden = false;
+  $("roi-modal").hidden = false;
 
-  video.addEventListener("loadedmetadata", () => {
-    const seek = $("roi-seek");
-    seek.hidden = false;
-    seek.max = video.duration || 1;
-    seek.value = Math.min(1, video.duration || 1); // 1s in: past a black/empty opening frame
-    video.currentTime = parseFloat(seek.value);
-  }, { once: true });
-
-  video.addEventListener("seeked", roiSizeCanvas);
-  window.addEventListener("resize", () => { if (roi.video) roiSizeCanvas(); });
+  if (isNewVideo) {
+    roi.points = [];
+    video.dataset.loadedUrl = url;
+    video.src = url;
+    video.addEventListener("loadedmetadata", () => {
+      const seek = $("roi-seek");
+      seek.max = video.duration || 1;
+      seek.value = Math.min(1, video.duration || 1); // 1s in: past a black/empty opening frame
+      video.currentTime = parseFloat(seek.value);
+    }, { once: true });
+  } else if (video.readyState >= 1) {
+    // Reopening the same already-loaded video - nothing to re-fetch, just
+    // make sure the canvas matches the modal's (larger) current size.
+    roiSizeCanvas();
+  }
 
   roiUpdateStatus();
-}, { once: false });
+}
+
+function closeRoiModal() {
+  $("roi-modal").hidden = true;
+}
+
+$("roi-preview-btn").addEventListener("click", openRoiModal);
+$("roi-done-btn").addEventListener("click", closeRoiModal);
+$("roi-modal-backdrop").addEventListener("click", closeRoiModal);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("roi-modal").hidden) closeRoiModal();
+});
 
 $("roi-seek").addEventListener("input", (e) => {
   if (roi.video) roi.video.currentTime = parseFloat(e.target.value);
@@ -572,6 +614,26 @@ function roiPayload() {
   if (!roi.video || roi.points.length < 3) return null;
   const w = roi.video.videoWidth, h = roi.video.videoHeight;
   return roi.points.map((p) => [Math.round(p.fx * w), Math.round(p.fy * h)]);
+}
+
+/* ------------------------------------------------------------------ */
+/* collapsible panels - generic: any [data-collapsible] element with a  */
+/* .collapse-toggle button and a .collapse-body wrapper gets one, state */
+/* remembered per-panel across reloads.                                 */
+/* ------------------------------------------------------------------ */
+
+function initCollapsibles() {
+  document.querySelectorAll("[data-collapsible]").forEach((panel) => {
+    const btn = panel.querySelector(".collapse-toggle");
+    const body = panel.querySelector(".collapse-body");
+    if (!btn || !body) return;
+    const key = `panel-collapsed:${panel.dataset.collapsible}`;
+    if (localStorage.getItem(key) === "1") panel.classList.add("is-collapsed");
+    btn.addEventListener("click", () => {
+      panel.classList.toggle("is-collapsed");
+      localStorage.setItem(key, panel.classList.contains("is-collapsed") ? "1" : "0");
+    });
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -623,7 +685,9 @@ $("submit-form").addEventListener("submit", async (e) => {
 $("delete-btn").addEventListener("click", async () => {
   const jobId = state.selected;
   if (!jobId) return;
-  if (!confirm(`Delete all stored data for this run?\n\n${jobId}`)) return;
+  const known = state.jobs.find((j) => j.job_id === jobId);
+  const label = known ? `Job #${known.seq}` : jobId;
+  if (!confirm(`Delete all stored data for this run?\n\n${label}`)) return;
   try {
     const res = await api(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
     toast(`Deleted ${res.snapshots_deleted} snapshots and ${res.tracks_deleted} tracks.`);
@@ -638,6 +702,7 @@ $("delete-btn").addEventListener("click", async () => {
 
 $("refresh-btn").addEventListener("click", () => { loadJobs(); loadHealth(); });
 
+initCollapsibles();
 loadHealth();
 loadJobs();
 loadConfig();

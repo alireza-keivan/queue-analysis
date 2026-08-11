@@ -41,6 +41,13 @@ def get_db(request: Request):
     return request.app.state.db
 
 
+async def _register_job(db, job_id: str) -> None:
+    """First write for a job_id claims the next sequence number; every write
+    after that is a no-op. Called before the actual snapshot insert so `seq`
+    exists by the time anything queries this job."""
+    await db.execute("INSERT OR IGNORE INTO jobs (job_id) VALUES (?)", (job_id,))
+
+
 async def _fetch_job_summaries(
     db, job_id: str | None = None,
     since: str | None = None, until: str | None = None,
@@ -50,7 +57,9 @@ async def _fetch_job_summaries(
     # practice, but there's no reason to forbid it.
     clauses, params = [], []
     if job_id is not None:
-        clauses.append("job_id = ?")
+        # Qualified: after the LEFT JOIN below, `jobs` also has a job_id
+        # column, so the bare name is ambiguous.
+        clauses.append("snapshots.job_id = ?")
         params.append(job_id)
     if since is not None:
         clauses.append("created_at >= ?")
@@ -63,12 +72,13 @@ async def _fetch_job_summaries(
 
     cursor = await db.execute(
         f"""
-        SELECT job_id, COUNT(*), MAX(queue_count), AVG(queue_count),
-               MAX(timestamp), MIN(id), MIN(created_at)
+        SELECT snapshots.job_id, COUNT(*), MAX(queue_count), AVG(queue_count),
+               MAX(timestamp), MIN(snapshots.id), MIN(created_at), jobs.seq
         FROM snapshots
+        LEFT JOIN jobs ON jobs.job_id = snapshots.job_id
         {where}
-        GROUP BY job_id
-        ORDER BY MIN(id) DESC
+        GROUP BY snapshots.job_id
+        ORDER BY MIN(snapshots.id) DESC
         """,
         params,
     )
@@ -91,11 +101,16 @@ async def _fetch_job_summaries(
     track_stats = {r[0]: (r[1], r[2], r[3]) for r in await cursor.fetchall()}
 
     jobs = []
-    for jid, snap_count, peak, avg_q, duration, _, created_at in snapshot_rows:
+    for jid, snap_count, peak, avg_q, duration, _, created_at, seq in snapshot_rows:
         count, avg_dwell, max_dwell = track_stats.get(jid, (0, 0.0, 0.0))
         jobs.append(
             JobSummary(
                 job_id=jid,
+                # LEFT JOIN means seq could in principle be NULL (a snapshot
+                # row from before /register_job existed and somehow never
+                # backfilled) - 0 is a visible "something's off" value rather
+                # than a crash.
+                seq=seq if seq is not None else 0,
                 snapshot_count=snap_count,
                 track_count=count,
                 peak_queue=peak or 0,
@@ -144,9 +159,16 @@ async def delete_job(job_id: str, db=Depends(get_db)):
 
 @app.post("/snapshots", response_model=SnapshotOut)
 async def create_snapshot(snapshot: SnapshotIn, db=Depends(get_db)):
+    await _register_job(db, snapshot.job_id)
+    # created_at is set explicitly (CURRENT_TIMESTAMP as SQL, not a bound
+    # value) rather than left to the column default - on a database that
+    # went through the created_at migration (ALTER TABLE ADD COLUMN), that
+    # default is permanently '' for backfill purposes, not CURRENT_TIMESTAMP,
+    # and SQLite has no way to change a column's default after the fact.
+    # Relying on it silently produced empty timestamps on every new row.
     cursor = await db.execute(
-        "INSERT INTO snapshots (job_id, timestamp, queue_count, inside_ids, outside_ids) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO snapshots (job_id, timestamp, queue_count, inside_ids, outside_ids, created_at) "
+        "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
         (
             snapshot.job_id, snapshot.timestamp, snapshot.queue_count,
             json.dumps(snapshot.inside_ids), json.dumps(snapshot.outside_ids),
@@ -164,9 +186,12 @@ async def create_snapshots_bulk(snapshots: list[SnapshotIn], db=Depends(get_db))
     endpoint, almost all of it per-request overhead, not the insert itself."""
     if not snapshots:
         return {"inserted": 0}
+    for job_id in {s.job_id for s in snapshots}:
+        await _register_job(db, job_id)
+    # See create_snapshot - created_at is explicit for the same reason.
     await db.executemany(
-        "INSERT INTO snapshots (job_id, timestamp, queue_count, inside_ids, outside_ids) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO snapshots (job_id, timestamp, queue_count, inside_ids, outside_ids, created_at) "
+        "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
         [
             (s.job_id, s.timestamp, s.queue_count,
              json.dumps(s.inside_ids), json.dumps(s.outside_ids))

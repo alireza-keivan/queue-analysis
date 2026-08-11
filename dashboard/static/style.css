@@ -17,23 +17,10 @@
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1013;
-    --surface: #14181d;
-    --surface-2: #1b2027;
-    --border: #262d36;
-    --text: #e8ecf1;
-    --text-dim: #93a0b0;
-    --text-faint: #64717f;
-    --accent: #2ad3bb;
-    --accent-soft: rgba(42, 211, 187, 0.14);
-    --warn: #f0a44a;
-    --warn-soft: rgba(240, 164, 74, 0.18);
-    --danger: #e8674f;
-    --ok: #38d39a;
-  }
-}
+/* Deliberately no @media (prefers-color-scheme: dark) override - the
+   dashboard used to follow the OS/browser theme, which meant a glowing
+   teal-on-near-black look for anyone in dark mode. Always renders the bright
+   palette above now, regardless of system preference. */
 
 * { box-sizing: border-box; }
 
@@ -141,6 +128,27 @@ h3 { font-size: 13px; }
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 10px;
 }
+.panel-head-actions { display: flex; align-items: center; gap: 6px; }
+
+/* ---------- collapsible panels/cards ---------- */
+.collapse-toggle {
+  padding: 3px 7px;
+  line-height: 1;
+  transition: transform .15s ease;
+}
+[data-collapsible].is-collapsed .collapse-toggle { transform: rotate(-90deg); }
+[data-collapsible].is-collapsed .collapse-body { display: none; }
+/* .grow relies on flex:1 to fill the sidebar's remaining height for the
+   scrollable job list - collapsed, it should only take its header's height. */
+.panel.grow[data-collapsible].is-collapsed { flex: 0 0 auto; }
+/* .panel.grow expects its direct child to be the flex column that shrinks
+   and scrolls (.joblist below has overflow-y:auto + min-height:0, but that
+   only works if ITS parent is properly bounded too) - .collapse-body sits
+   between them now and, unstyled, was just a block div with no height
+   constraint of its own, so .joblist grew to full content height instead of
+   scrolling within the sidebar. This restores the same flex chain the panel
+   had before the collapse-body wrapper was introduced. */
+.panel.grow .collapse-body { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 
 /* ---------- form ---------- */
 .form { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
@@ -186,10 +194,52 @@ h3 { font-size: 13px; }
   height: 100%;
   cursor: crosshair;
 }
-.roi-editor input[type="range"] {
+#roi-seek {
   width: 100%;
   accent-color: var(--accent);
 }
+
+/* ---------- ROI modal - deliberately large: this is a "click precisely on   */
+/* a video frame" task, and the inline sidebar version was too small for      */
+/* clients to place points accurately. ---------------------------------------*/
+.roi-modal {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.roi-modal-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(10, 12, 15, 0.6);
+}
+.roi-modal-content {
+  position: relative;
+  width: min(1100px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.35);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.roi-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+/* Deliberately no object-fit/max-height on the video itself: it keeps
+   width:100%; height:auto (natural aspect ratio, no letterboxing), because
+   roiSizeCanvas() sizes the click-capture canvas to the video element's own
+   box - any letterboxing would put black bars between the canvas and the
+   actual pixels, throwing off every click coordinate. A very tall (portrait)
+   video just makes the modal scroll instead - see .roi-modal-content above. */
+
+/* Modal hidden by default via the `hidden` attribute, but .roi-modal above
+   sets its own `display: flex` unconditionally - author CSS beats the
+   browser's built-in [hidden]{display:none} rule, so without this override
+   the modal ignored `hidden` entirely and rendered open at all times. Same
+   bug, same fix as .empty/.detail below. */
+.roi-modal[hidden] { display: none; }
 
 .check { flex-direction: row !important; align-items: center; gap: 7px !important; padding-bottom: 8px; }
 .check input { accent-color: var(--accent); width: 15px; height: 15px; }
@@ -393,6 +443,7 @@ button:disabled { opacity: .55; cursor: progress; }
   gap: 12px; margin-bottom: 10px; flex-wrap: wrap;
 }
 .card-sub { font-size: 10.5px; color: var(--text-faint); }
+.card-head .collapse-toggle { align-self: center; margin-left: auto; }
 
 .swatch {
   display: inline-block; width: 9px; height: 9px;

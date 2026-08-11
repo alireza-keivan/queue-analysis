@@ -27,6 +27,9 @@ class JobSummary(BaseModel):
     """Aggregates for one processing run, so the dashboard's job list does not
     have to pull every row just to show headline numbers."""
     job_id: str
+    # Plain 1, 2, 3... in the order jobs were first seen - what clients
+    # actually see; job_id (a UUID) stays around for API calls and debugging.
+    seq: int
     snapshot_count: int
     track_count: int
     peak_queue: int

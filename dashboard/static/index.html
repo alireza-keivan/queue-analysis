@@ -23,8 +23,12 @@
 
   <div class="layout">
     <aside class="sidebar">
-      <section class="panel">
-        <h2>New analysis</h2>
+      <section class="panel" data-collapsible="new-analysis">
+        <div class="panel-head">
+          <h2>New analysis</h2>
+          <button type="button" class="ghost collapse-toggle" title="Collapse">⌄</button>
+        </div>
+        <div class="collapse-body">
         <form id="submit-form" class="form">
           <label>
             <span>Video URL</span>
@@ -35,15 +39,8 @@
           <div class="roi-editor">
             <div class="roi-toolbar">
               <button type="button" class="ghost" id="roi-preview-btn">Preview &amp; set ROI</button>
-              <button type="button" class="ghost" id="roi-undo-btn" hidden>Undo point</button>
-              <button type="button" class="ghost" id="roi-clear-btn" hidden>Clear</button>
             </div>
-            <p class="roi-status" id="roi-status">Using the default ROI from queue.yaml.</p>
-            <div class="roi-stage" id="roi-stage" hidden>
-              <video id="roi-video" muted playsinline preload="auto"></video>
-              <canvas id="roi-canvas"></canvas>
-            </div>
-            <input type="range" id="roi-seek" min="0" max="1" step="0.001" value="0" hidden>
+            <p class="roi-status" id="roi-summary">Using the default ROI from queue.yaml.</p>
           </div>
 
           <div class="form-row">
@@ -77,29 +74,38 @@
             Processing runs on a GPU worker and can take a few minutes.
           </p>
         </form>
+        </div>
       </section>
 
-      <section class="panel grow">
+      <section class="panel grow" data-collapsible="jobs">
         <div class="panel-head">
           <h2>Jobs</h2>
-          <button class="ghost" id="refresh-btn" title="Refresh">↻</button>
+          <div class="panel-head-actions">
+            <button class="ghost" id="refresh-btn" title="Refresh">↻</button>
+            <button type="button" class="ghost collapse-toggle" title="Collapse">⌄</button>
+          </div>
         </div>
-        <div class="date-filter">
-          <input type="date" id="filter-since" title="From date">
-          <span class="date-filter-sep">–</span>
-          <input type="date" id="filter-until" title="To date">
-          <button type="button" class="ghost" id="filter-clear-btn" title="Clear date filter">✕</button>
+        <div class="collapse-body">
+          <div class="date-filter">
+            <input type="date" id="filter-since" title="From date">
+            <span class="date-filter-sep">–</span>
+            <input type="date" id="filter-until" title="To date">
+            <button type="button" class="ghost" id="filter-clear-btn" title="Clear date filter">✕</button>
+          </div>
+          <ul class="joblist" id="joblist"></ul>
         </div>
-        <ul class="joblist" id="joblist"></ul>
       </section>
     </aside>
 
     <main class="main" id="main">
-      <section class="card sheet-card" id="sheet-card" hidden>
+      <section class="card sheet-card" id="sheet-card" hidden data-collapsible="sheet">
         <div class="card-head">
           <h3>Job log (Google Sheet)</h3>
+          <button type="button" class="ghost collapse-toggle" title="Collapse">⌄</button>
         </div>
-        <iframe id="sheet-frame" class="sheet-frame" loading="lazy" title="Job log Google Sheet"></iframe>
+        <div class="collapse-body">
+          <iframe id="sheet-frame" class="sheet-frame" loading="lazy" title="Job log Google Sheet"></iframe>
+        </div>
       </section>
 
       <div class="empty" id="empty-state">
@@ -115,8 +121,8 @@
             <code class="jobid" id="detail-jobid"></code>
           </div>
           <div class="head-actions">
-            <a class="ghost-link" id="video-link" hidden target="_blank" rel="noopener">
-              annotated video ↗
+            <a class="ghost-link" id="video-link" hidden target="_blank" rel="noopener" download>
+              ⬇ Download annotated video
             </a>
             <button class="ghost danger" id="delete-btn">Delete run</button>
           </div>
@@ -124,33 +130,44 @@
 
         <div class="tiles" id="tiles"></div>
 
-        <section class="card">
+        <section class="card" data-collapsible="occupancy">
           <div class="card-head">
             <h3>Queue occupancy over time</h3>
             <span class="card-sub" id="occupancy-sub"></span>
+            <button type="button" class="ghost collapse-toggle" title="Collapse">⌄</button>
           </div>
-          <div class="chart" id="chart-occupancy"></div>
+          <div class="collapse-body">
+            <div class="chart" id="chart-occupancy"></div>
+          </div>
         </section>
 
-        <section class="card">
+        <section class="card" data-collapsible="dwell">
           <div class="card-head">
             <h3>Dwell time distribution</h3>
             <span class="card-sub">
               <span class="swatch swatch-warn"></span> under 1s — likely tracking churn
             </span>
+            <button type="button" class="ghost collapse-toggle" title="Collapse">⌄</button>
           </div>
-          <div class="chart" id="chart-dwell"></div>
+          <div class="collapse-body">
+            <div class="chart" id="chart-dwell"></div>
+          </div>
         </section>
 
-        <section class="card">
-          <div class="card-head"><h3>Tracks</h3></div>
-          <div class="tablewrap">
-            <table class="table" id="track-table">
-              <thead>
-                <tr><th>Track ID</th><th class="num">Dwell (s)</th><th>Confidence</th></tr>
-              </thead>
-              <tbody></tbody>
-            </table>
+        <section class="card" data-collapsible="tracks">
+          <div class="card-head">
+            <h3>Tracks</h3>
+            <button type="button" class="ghost collapse-toggle" title="Collapse">⌄</button>
+          </div>
+          <div class="collapse-body">
+            <div class="tablewrap">
+              <table class="table" id="track-table">
+                <thead>
+                  <tr><th>Track ID</th><th class="num">Dwell (s)</th><th>Confidence</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
           </div>
         </section>
       </div>
@@ -158,6 +175,26 @@
   </div>
 
   <div class="toast" id="toast" hidden></div>
+
+  <div class="roi-modal" id="roi-modal" hidden>
+    <div class="roi-modal-backdrop" id="roi-modal-backdrop"></div>
+    <div class="roi-modal-content">
+      <div class="roi-modal-head">
+        <h3>Set the queue ROI</h3>
+        <div class="roi-toolbar">
+          <button type="button" class="ghost" id="roi-undo-btn">Undo point</button>
+          <button type="button" class="ghost" id="roi-clear-btn">Clear</button>
+          <button type="button" id="roi-done-btn">Done</button>
+        </div>
+      </div>
+      <div class="roi-stage" id="roi-stage">
+        <video id="roi-video" muted playsinline preload="auto"></video>
+        <canvas id="roi-canvas"></canvas>
+      </div>
+      <input type="range" id="roi-seek" min="0" max="1" step="0.001" value="0">
+      <p class="roi-status" id="roi-status">Using the default ROI from queue.yaml.</p>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>
