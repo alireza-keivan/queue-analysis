@@ -117,7 +117,8 @@ def handler(event):
             # worker - run score_diagnostic.py against this output instead.
             # See app/track_diagnostics.py.
             a = time.perf_counter()
-            history, stride, src_fps = collect_track_history(cap, queue_manager, target_fps=target_fps)
+            history, stride, src_fps, frame_size = collect_track_history(
+                cap, queue_manager, target_fps=target_fps)
             t_diag = time.perf_counter() - a
             release_cap(cap)
             cap = None
@@ -128,6 +129,9 @@ def handler(event):
                 "collection_s": round(t_diag, 1),
                 "stride": stride,
                 "src_fps": src_fps,
+                # Lets the CPU scorer tell a person walking out of shot apart
+                # from a track genuinely lost mid-frame.
+                "frame_size": frame_size,
                 "history": [
                     {str(tid): list(box) for tid, box in frame.items()}
                     for frame in history

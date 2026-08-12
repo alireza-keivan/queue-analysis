@@ -30,7 +30,16 @@ def handler(event):
             {int(tid): tuple(box) for tid, box in frame.items()}
             for frame in job_input["history"]
         ]
-        report = score_track_churn(history, job_input["stride"], job_input["src_fps"])
+        # frame_size is optional: older collection payloads predate it, and
+        # score_track_churn degrades honestly without it (reports the split as
+        # unavailable rather than guessing frame bounds from box coordinates).
+        frame_size = job_input.get("frame_size")
+        if frame_size:
+            frame_size = tuple(frame_size)
+        report = score_track_churn(
+            history, job_input["stride"], job_input["src_fps"],
+            frame_size=frame_size,
+        )
         logging.info(f"Scored diagnostic: {report}")
         return {"diagnostic": report}
 
