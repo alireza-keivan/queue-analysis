@@ -31,7 +31,7 @@ A video comes in; a GPU spins up on demand, detects and tracks every person, mea
 1. A video is submitted (by URL) to the **dashboard**. Before submitting, a client can draw the **region of interest (ROI)** directly on a real frame of that video, and optionally override detection confidence / IOU thresholds — entirely in the browser, no server round-trip needed to preview a frame.
 2. The dashboard triggers a **RunPod Serverless** job — a GPU worker spins up **only for the duration of that job**, not 24/7 — carrying the ROI/thresholds as request parameters. Nothing is written to a config file: `queue.yaml` stays the fallback default, and every job can override it independently with no redeploy.
 3. On the GPU: **YOLO26** detects every person, **BoT-SORT** tracks them frame to frame, and each track is checked against the ROI to determine queue occupancy and per-person dwell time.
-4. Results (per-frame occupancy, per-person dwell time, optional annotated video) are relayed into **storage-api**, a dedicated service that owns the database exclusively.
+4. Results (per-frame occupancy, per-person dwell time, and a per-job cost/profile breakdown) are relayed into **storage-api**, a dedicated service that owns the database exclusively. An annotated video is rendered only if explicitly requested — it is off by default, because it roughly doubles the cost of a job and the metrics are identical either way.
 5. The dashboard queries storage-api and renders interactive charts — including a hover inspector that shows exactly which track IDs were inside vs. outside the ROI at any 0.1s instant — plus a job list with exact submission timestamps and date-range filtering, and a live embedded view of the Google Sheet n8n logs every job to.
 6. Optionally, an **n8n** workflow watches job results and sends an alert automatically when a threshold is crossed (e.g. queue peak too high) — no one has to check the dashboard for it to be noticed.
 
@@ -88,35 +88,44 @@ flowchart LR
 ## Key features
 
 - **On-demand GPU, not 24/7** — RunPod Serverless spins up a worker per job and shuts it down after; cost scales with actual usage, not wall-clock time.
-- **Cost-engineered pipeline, backed by real numbers** — configurable frame-rate sampling (`target_fps`), zero-copy frame skipping (`cap.grab()`/`retrieve()`), and an `annotate` toggle to skip rendering/upload entirely when only metrics are needed. Measured on the reference video:
+- **Cost-engineered pipeline, backed by controlled experiments** — not by guesswork. Nine interleaved RunPod runs (three configurations × three repetitions) on the same 42.6s / 1920×1080 / 60fps reference video, plus local codec benchmarks. The decomposition works because `cap.grab()` decodes *every* source frame regardless of `target_fps` — so decode cost is constant while inference scales, and differencing two runs cancels all shared overhead.
 
   ```
-  JOB COST BREAKDOWN
-    download    2.6s   (40 MB in)
-    model load  2.9s   <- paid on every job, by design (see Known limitations)
-    processing 38.4s
-    upload      7.2s   (53 MB out)
-    TOTAL      51.1s   (non-processing overhead: 25%)
+  WHERE A DEFAULT JOB'S TIME ACTUALLY GOES   (warm worker, 20.65s total)
+    fixed I/O floor   10.40s  50.4%   download + model load + decode all 2556 frames
+    annotation         9.50s  46.0%   render + encode + upload
+    YOLO + BoT-SORT    0.75s   3.6%   <- the actual inference, on 426 frames
+                                         marginal cost: 1.76 ms per processed frame
   ```
-  Frame-rate tuning alone cut per-job GPU time by roughly **10x** on this video. Profiling also showed tracking (BoT-SORT + ReID), not YOLO inference, was the dominant per-frame cost — `with_reid` was subsequently A/B tested and switched off (`app/trackers/botsort.yaml`), cutting that further.
+  **This pipeline is I/O- and annotation-bound, not inference-bound.** Going from 86 to 426 inferred frames (5×) cost only 0.6 seconds. That single finding redirected every subsequent optimization — and it invalidated an earlier, less careful profile of this same project which had concluded the opposite (that tracking dominated at 61%); those numbers came from a cold worker and could not survive arithmetic against a warm job's total runtime.
+
+  Acted on since: `annotate` now defaults to **off** (−46% per job), the annotated output is downscaled and H.264-preferred (it was previously 54.7 MB — *larger* than the 39.7 MB source, because mp4v is a weak codec), and the model weights are baked into the image so cold workers stop downloading them mid-job. Cold start is the remaining multiplier: the same work measured 33.6s cold versus 11.15s warm.
+
+- **The profiler is part of the API, not just the logs** — every job returns a `cost` block (per-stage seconds, MB in/out) and a `profile` block (ms/frame per stage, tracking-quality summary). Numbers that live only in a log console can't be graphed, alerted on, or shown to a client — and, as this project learned the hard way, can't be read at all by whoever is trying to optimize the thing.
 
 - **CPU/GPU cost separation, not just annotation** — work that never touches the model doesn't run on the GPU-billed worker. Tracker diagnostics (`app/track_diagnostics.py`) are split into a GPU-bound collection pass (`collect_track_history`) and a pure-Python scoring pass (`score_track_churn`) with zero cv2/model imports; the scoring half runs on `cpu_handler.py`, deployed as a **second, CPU-only RunPod Serverless endpoint**.
 - **Per-job ROI and detection thresholds, no redeploy** — the ROI polygon and confidence/IOU thresholds are picked in the browser (a `<canvas>` overlay on the actual video frame, decoded natively by the browser — zero extra server cost) and ride along in that one job's request. `queue.yaml`'s values are only ever the fallback default; nothing is written to any file, so a client's setting takes effect on their very next submission.
 - **Correctness-first tracking** — a fresh tracker is instantiated per job (not reused across unrelated videos on a warm worker), eliminating identity leakage between jobs.
 - **Interactive analytics dashboard** — occupancy-over-time and dwell-time charts built from scratch in SVG (no charting library, no CDN dependency), with a Google-Analytics-style hover readout showing the exact track IDs inside/outside the ROI at any sampled instant. The job list shows exact submission timestamps (down to the second) with date-range filtering, and a live Google Sheet — the same one n8n logs every job into — is embedded directly in the dashboard.
-- **Track-quality diagnostics, measured not guessed** — a standalone analysis pass (`app/track_diagnostics.py`) classifies every lost track as occlusion-plausible or an unexplained "phantom" switch, and flags high-overlap identity-crossing events. Real output from the reference video:
+- **Track-quality diagnostics — including the part where the tool itself was wrong** — a standalone analysis pass (`app/track_diagnostics.py`) classifies every lost track and flags identity-crossing events. Real output from the reference video:
 
   ```
-  total_distinct_ids: 88          track_endings_analyzed: 78
-  occlusion_plausible_endings: 63 (81%)
-  phantom_endings_no_overlap: 15  (19%)   <- zero physical explanation, not a guess
-  crossing_events: 924            (107 unique id-pairs)
+  total_distinct_ids: 87          track_endings_analyzed: 77
+  occlusion_plausible_endings: 60   (another person's box overlapped it)
+  no-overlap endings:          17
+    ├─ walked out of frame:    13   <- correct behaviour, NOT a failure
+    └─ genuinely unexplained:   4   ( 5.2% )  <- the real number
+  candidate ID switches:       19   (searched over the tracker's own 3.0s buffer)
+  crossing_events:            910
   ```
-  Turning "the tracker feels glitchy" into a measured percentage is the difference between debugging by feel and debugging with evidence.
+  An earlier version of this tool reported **22.1% unexplained losses and 1 ID switch**. Both were wrong, in opposite directions. It counted people *walking out of shot* as unexplained tracker failures, and it searched only 0.3s ahead for a re-appearing person while BoT-SORT's own `track_buffer` keeps lost tracks alive for 3.0s — so it structurally could not see most of the ID switches the tracker was actually making. Fixing both moved the honest failure rate from 22.1% to **5.2%**, and surfaced the ~19 ID switches that are the *real* occlusion signal.
+
+  Measuring your own model's failure rate is worth something. Auditing the measurement, finding it flattering in one direction and blind in the other, and correcting it is worth more — a metric you haven't stress-tested is just a number you like.
 
 - **Two-service architecture with a single source of truth** — `storage-api` is the only thing that ever touches the SQLite file; every other service talks to it over HTTP, avoiding SQLite's multi-writer/locking pitfalls entirely. Its schema evolves through actual migrations (`storage-api/db.py`), not `CREATE TABLE IF NOT EXISTS` alone — which silently never updates a database that already exists, a real bug this project hit and fixed.
 - **Authenticated internally** — `storage-api` requires a shared-secret header on every route (fails closed if unset, not open), since it's reachable from other containers on the network. Every internal caller, including the n8n workflow, must carry it.
 - **Failures say what actually broke** — the dashboard surfaces the real upstream cause (storage-api unreachable, a specific query failure, a RunPod error) as a legible message instead of a bare, unexplained `500`.
+- **Tested where testing is cheap and worth it** — 26 tests over the pure logic that is easy to get quietly wrong: IoU maths, the frame-exit vs. unexplained-loss split, the ID-switch search window, output-resolution and frame-stride arithmetic. No model, no GPU, no video fixtures — they run in seconds anywhere (`python -m pytest tests/`). They already earned their place: the resolution tests pin down the failure mode where `cv2.VideoWriter` silently discards frames whose size doesn't match the writer and leaves you a valid-looking empty file.
 - **Automated alerting via n8n** — a self-hosted n8n instance watches job results and sends a notification (email, plus a Google Sheets audit log) automatically when a configured threshold is crossed, with no manual monitoring.
 - **One-command local orchestration** — `docker-compose up` brings up the dashboard, storage layer, and automation layer, all networked together, with named volumes so data and workflows survive restarts.
 
@@ -149,13 +158,14 @@ flowchart LR
 
 | Component | Role | Stack |
 |---|---|---|
-| **`handler.py`** (RunPod, GPU) | Downloads video, runs detection + tracking, computes occupancy/dwell metrics, optionally uploads annotated output. Accepts per-job `region`/`conf`/`iou` overrides | Python, Ultralytics YOLO26, BoT-SORT, OpenCV, boto3 |
+| **`handler.py`** (RunPod, GPU) | Downloads video, runs detection + tracking, computes occupancy/dwell metrics, returns a per-job cost/profile breakdown, and uploads an annotated video only when asked. Accepts per-job `region`/`conf`/`iou` overrides | Python, Ultralytics YOLO26, BoT-SORT, OpenCV, boto3 |
 | **`cpu_handler.py`** (RunPod, CPU-only) | Second, cheaper Serverless endpoint: scores tracker-diagnostic churn/phantom-switch data collected by the GPU worker. No cv2, no torch, no ultralytics in this image | Python, `runpod` SDK only |
 | **`app/queue_management.py`** | Core video-processing pipeline: config loading, frame-rate control, ROI containment, track lifecycle (entry/exit → dwell time) | Python, OpenCV, NumPy |
 | **`app/track_diagnostics.py`** | Tracking-quality analysis, split into a GPU-bound collection pass and a pure-CPU scoring pass: occlusion vs. phantom ID loss, identity-crossing detection | Python |
 | **`storage-api/`** | Sole owner of the database; authenticated REST API for snapshots, tracks, per-job aggregates (including submission time); migrates its own schema on startup | FastAPI, aiosqlite (async SQLite) |
 | **`dashboard/`** | Triggers jobs (with browser-picked ROI/thresholds), relays results into storage-api, renders interactive charts, job-date filtering, and an embedded Google Sheet | FastAPI, vanilla JS, hand-built SVG charts |
-| **Backblaze B2** | S3-compatible object storage for annotated output video | boto3 |
+| **Backblaze B2** | S3-compatible object storage for annotated output video, keyed per job | boto3 |
+| **`tests/`** | Pure-logic tests for the diagnostics maths and video-output sizing — no model, no GPU, no fixtures | pytest |
 | **n8n** | Workflow automation: watches job results, logs every job to a Google Sheet, and sends alerts when a threshold is crossed | n8n (self-hosted), SMTP, Google Sheets |
 | **`docker-compose.yml`** | Local orchestration of `storage-api` + `dashboard` + `n8n`, networked, with persistent named volumes | Docker Compose |
 
@@ -205,7 +215,7 @@ n8n (workflow automation): **http://localhost:5678**
 
 ## Usage
 
-**Via the dashboard** — open http://localhost:8080, paste a video URL, set the target FPS and whether to keep the annotated output, and click **Run analysis**. Results appear automatically: occupancy chart, dwell-time histogram, and a per-job track table. Hover the occupancy chart to see exactly which track IDs were in/out of the ROI at any instant.
+**Via the dashboard** — open http://localhost:8080, paste a video URL, set the target FPS, and click **Run analysis**. Results appear automatically: occupancy chart, dwell-time histogram, and a per-job track table. Hover the occupancy chart to see exactly which track IDs were in/out of the ROI at any instant. Tick **Annotate** only if you want the rendered video — it is off by default because it roughly doubles job cost without changing a single metric.
 
 **Setting a custom ROI and thresholds** — click **Preview & set ROI** before submitting: the video loads directly in the browser, click 3+ points on the frame to draw the queue polygon (a seek slider helps land on a frame with people visible), and optionally expand **Advanced settings** to override confidence/IOU for that job only. Leave either blank to fall back to `queue.yaml`'s defaults. Nothing is written to any file — the values are sent with that one job's request.
 
@@ -222,19 +232,32 @@ curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
 # 2. CPU-only endpoint: score it (pure Python, no model, billed at CPU rate)
 curl -X POST "https://api.runpod.ai/v2/${RUNPOD_CPU_ENDPOINT_ID}/runsync" \
   -H "Authorization: Bearer ${RUNPOD_API_KEY}" -H "Content-Type: application/json" \
-  -d "{\"input\": {\"task\": \"score_diagnostic\", $(python3 -c "
+  --data-binary @- <<EOF
+{"input": $(python3 -c "
 import json; d = json.load(open('collected.json'))['output']
-print(f'\"history\": {json.dumps(d[\"history\"])}, \"stride\": {d[\"stride\"]}, \"src_fps\": {d[\"src_fps\"]}')
-")}}"
+print(json.dumps({'task':'score_diagnostic','history':d['history'],
+                  'stride':d['stride'],'src_fps':d['src_fps'],
+                  'frame_size':d.get('frame_size')}))
+")}
+EOF
 ```
+`frame_size` is what lets the scorer separate "walked out of shot" from "genuinely lost mid-frame". Without it the split can't be computed, and the report says so (`edge_classification_available: false`) rather than guessing.
+
+> A full history is a few hundred KB of JSON — pass it via `--data-binary`/a file, not as a shell argument, or you will hit `Argument list too long`.
 
 **Directly against RunPod** (what the dashboard itself calls under the hood):
 ```bash
 curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
   -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"input": {"video_url": "https://example.com/video.mp4", "target_fps": 10, "annotate": true,
+  -d '{"input": {"video_url": "https://example.com/video.mp4", "target_fps": 10,
        "region": [[673, 785], [1125, 1078], [1862, 1005], [1094, 718]], "conf": 0.35, "iou": 0.70}}'
+```
+Add `"annotate": true` to also render and upload the annotated video. The response carries `cost` and `profile` blocks either way.
+
+**Running the tests** — pure logic, no GPU or model required:
+```bash
+python -m pytest tests/ -v
 ```
 
 ---
@@ -259,6 +282,9 @@ queue_analysis/
 ├── dashboard/                  # orchestration UI
 │   ├── main.py
 │   └── static/  (index.html, app.js, style.css)   # incl. the ROI/config picker
+├── tests/                      # pure-logic tests - no model, no GPU
+│   ├── test_track_diagnostics.py   # IoU, frame-exit split, ID-switch window
+│   └── test_video_output.py        # output sizing, codec fallback, frame stride
 ├── docs/screenshots/           # README media
 └── docker-compose.yml          # local orchestration
 ```
@@ -268,20 +294,28 @@ queue_analysis/
 ## Known limitations
 
 - No continuous/live camera ingestion yet — video is submitted by URL per job, not streamed from a live source.
-- Tracking accuracy degrades in dense, closely-crossing crowds; `app/track_diagnostics.py` exists specifically to measure this rather than paper over it.
+- Tracking accuracy degrades in dense, closely-crossing crowds. The reference video shows ~19 candidate ID switches across 87 tracks; `app/track_diagnostics.py` exists specifically to measure that rather than paper over it. Note that a "candidate" is an upper bound — over a 3s window in a busy queue, some are a different person entering where someone left.
 - SQLite is appropriate at current scale (single-writer, owned exclusively by `storage-api`) but would need to move to a concurrent-writer database (e.g. Postgres) if multiple simultaneous camera sources are added.
-- No automated test suite yet over the pure-function logic (ROI containment, dwell-time lifecycle, frame-stride math).
+- Tests cover the pure logic (diagnostics maths, output sizing, frame-stride). The GPU path itself — detection, tracking, the dwell-time state machine over real frames — is verified by running real jobs, not by automated tests.
 - The ROI *position* is client-configurable per job; the containment *rule* itself (point-in-polygon, one rule type) is not yet — see roadmap.
+- The annotated video's URL is not persisted: it is returned once, when the job completes. Reloading the dashboard or selecting an older job will not offer a download link, even though the file still exists in the bucket.
+- Annotation rendering still happens on the GPU worker. It is off by default, so most jobs never pay for it, but when requested it is CPU work billed at GPU rate.
 - n8n's auth header (see the note in [Environment variables](#environment-variables)) lives inside the workflow, not in code — it doesn't survive rebuilding the workflow from scratch and isn't something this repo can enforce.
+- Deploys are not automatic: RunPod builds from this repository, but pushing does not by itself roll the Serverless endpoints. A new release has to be triggered, or the workers keep running the previous image.
 
 ## Roadmap
 
+Ordered by measured impact, not by appeal:
+
+- **Attack the 50% fixed I/O floor** — now the largest single block. Two candidates: let ffmpeg apply the frame stride natively instead of a Python `grab()` loop, or use NVDEC to decode on the GPU that currently sits idle for ~96% of every job.
+- **Cut cold start** — 33.6s cold versus 11.15s warm on identical work. Model weights are already baked into the image; enabling FlashBoot is the next step. For sporadic client traffic this is probably the biggest remaining real-world multiplier, since most jobs arrive at a cold worker.
+- **Drop `solutions.QueueManager` for a direct `YOLO().track()` call** — it unconditionally renders annotations and runs a shapely containment test on every box, both of which this pipeline discards (it computes ROI containment itself with `cv2.pointPolygonTest`, ~19× faster). Measured waste: ~1.0s per job.
+- **A/B `yolo26m` against `yolo26l`** — worth testing now that the diagnostic is trustworthy, and cheap because inference is only ~4% of job cost. ID switches after partial occlusion are where a larger detector could plausibly help; ReID has already been A/B tested here and made no measurable difference.
+- Extend `track_diagnostics.py` to detect identity oscillation between two already-existing tracks, not just re-appearance under a brand-new ID.
+- Persist the annotated video's URL in `storage-api` so the download link survives a page reload.
 - Continuous/RTSP ingestion as the "record" half of a record-then-batch architecture.
-- Extend `track_diagnostics.py` to detect identity oscillation between two already-existing tracks (not just brand-new-ID phantom switches).
-- Re-profile now that `with_reid` is off to get a fresh per-stage cost breakdown, and use it to decide whether a two-pass pipeline (batch GPU detection, then CPU-side association) is still worth the added complexity.
-- Extend the CPU/GPU split beyond diagnostics into the main pipeline — annotation rendering currently still runs on the GPU worker by design (kept for client-facing testing for now); moving it to the CPU-only endpoint once that need passes would remove another GPU-billed non-GPU cost.
 - Additional n8n workflows: a self-monitoring workflow that alerts if `storage-api` or `dashboard` itself goes down.
-- Multi-camera support.
+- Multi-camera support (forces the Postgres migration, which is cheap precisely because `storage-api` was written async from the start).
 - Generalize the ROI containment check from a single hardcoded rule *type* into a configurable rule set — position is already client-configurable (see Key features), but the underlying pattern (track lifecycle → event → rule check) extends naturally to classifying arbitrary events against custom reference criteria, not just "inside this polygon."
 
 ## License
